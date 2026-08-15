@@ -1,0 +1,206 @@
+@import "tailwindcss";
+
+@theme {
+  /* Layered light surfaces: 0 = app canvas, 1 = panels, 2+ = subtle fills */
+  --color-surface-0: #f6f7f9;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f2f4f7;
+  --color-surface-3: #e8ebf0;
+  --color-surface-4: #dde1e8;
+
+  --color-line: #e4e7ec;
+  --color-line-strong: #d0d5dd;
+
+  --color-content-primary: #101828;
+  --color-content-secondary: #475467;
+  --color-content-muted: #667085;
+  --color-content-inverse: #ffffff;
+
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+
+  --color-signal-50: #ecfeff;
+  --color-signal-100: #cffafe;
+  --color-signal-200: #a5f3fc;
+  --color-signal-500: #06b6d4;
+  --color-signal-600: #0891b2;
+  --color-signal-700: #0e7490;
+
+  --color-ok-50: #ecfdf5;
+  --color-ok-100: #d1fae5;
+  --color-ok-200: #a7f3d0;
+  --color-ok-500: #10b981;
+  --color-ok-600: #059669;
+  --color-ok-700: #047857;
+
+  --color-warn-50: #fffbeb;
+  --color-warn-100: #fef3c7;
+  --color-warn-200: #fde68a;
+  --color-warn-500: #f59e0b;
+  --color-warn-600: #d97706;
+  --color-warn-700: #b45309;
+
+  --color-danger-50: #fef2f2;
+  --color-danger-100: #fee2e2;
+  --color-danger-200: #fecaca;
+  --color-danger-500: #ef4444;
+  --color-danger-600: #dc2626;
+  --color-danger-700: #b91c1c;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-code), ui-monospace, "JetBrains Mono", monospace;
+
+  --radius-panel: 12px;
+}
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  border-color: var(--color-line);
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+body {
+  background-color: var(--color-surface-0);
+  color: var(--color-content-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "tnum";
+  overscroll-behavior-y: none;
+}
+
+/* Technical grid backdrop, tuned for a light canvas */
+.app-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(to right, rgba(16, 24, 40, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(16, 24, 40, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse 90% 55% at 50% 0%, black 20%, transparent 80%);
+}
+
+.app-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(680px circle at 10% -12%, rgba(99, 102, 241, 0.1), transparent 62%),
+    radial-gradient(560px circle at 92% -4%, rgba(6, 182, 212, 0.08), transparent 62%);
+}
+
+@utility panel {
+  @apply rounded-panel border border-line bg-surface-1 shadow-[0_1px_2px_rgba(16,24,40,0.04)];
+}
+
+@utility panel-hover {
+  @apply transition-all duration-200 hover:border-line-strong hover:shadow-[0_2px_8px_rgba(16,24,40,0.07)];
+}
+
+@utility panel-head {
+  @apply flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line px-4 py-3 sm:px-5 sm:py-3.5;
+}
+
+@utility panel-title {
+  @apply text-sm font-semibold tracking-tight text-content-primary;
+}
+
+@utility card {
+  @apply panel p-4 sm:p-5;
+}
+
+@utility label-caps {
+  @apply text-[11px] font-semibold uppercase tracking-[0.12em] text-content-muted;
+}
+
+@utility metric {
+  @apply font-mono text-xl font-semibold tabular-nums tracking-tight text-content-primary sm:text-2xl;
+}
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm
+    font-medium text-content-inverse shadow-[0_1px_2px_rgba(16,24,40,0.08)] transition-colors
+    duration-150 hover:bg-brand-700 focus-visible:outline-none focus-visible:ring-2
+    focus-visible:ring-brand-500/45 focus-visible:ring-offset-2
+    focus-visible:ring-offset-surface-0 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+@utility btn-secondary {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-line-strong
+    bg-surface-1 px-3 py-2 text-sm font-medium text-content-secondary
+    shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-colors duration-150
+    hover:bg-surface-2 hover:text-content-primary focus-visible:outline-none
+    focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2
+    focus-visible:ring-offset-surface-0 disabled:opacity-50;
+}
+
+@utility btn-danger {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-danger-200
+    bg-danger-50 px-2.5 py-1.5 text-xs font-medium text-danger-700 transition-colors
+    hover:bg-danger-100 focus-visible:outline-none focus-visible:ring-2
+    focus-visible:ring-danger-500/40;
+}
+
+@utility btn-ghost {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm
+    text-content-secondary transition-colors hover:bg-surface-2 hover:text-content-primary;
+}
+
+@utility input {
+  @apply w-full rounded-lg border border-line-strong bg-surface-1 px-3 py-2 text-sm
+    text-content-primary shadow-[0_1px_2px_rgba(16,24,40,0.04)]
+    placeholder:text-content-muted transition-shadow focus:border-brand-500
+    focus:outline-none focus:ring-2 focus:ring-brand-500/20;
+}
+
+@utility field-label {
+  @apply mb-1.5 block text-xs font-medium text-content-secondary;
+}
+
+@utility data-table {
+  @apply w-full border-collapse text-left text-sm;
+
+  & thead th {
+    @apply whitespace-nowrap border-b border-line bg-surface-2 px-4 py-2.5 text-[11px]
+      font-semibold uppercase tracking-[0.1em] text-content-muted sm:px-5;
+  }
+
+  & tbody tr {
+    @apply transition-colors hover:bg-surface-2/70;
+  }
+
+  & tbody td {
+    @apply border-b border-line px-4 py-3 align-middle text-content-secondary sm:px-5;
+  }
+
+  & tbody tr:last-child td {
+    @apply border-b-0;
+  }
+}
+
+/* Horizontal scroll container that keeps rounded panel corners intact */
+@utility table-scroll {
+  @apply -mx-px overflow-x-auto overscroll-x-contain;
+}
+
+@utility mono-chip {
+  @apply inline-flex max-w-full items-center truncate rounded-md border border-line bg-surface-2
+    px-1.5 py-0.5 font-mono text-xs text-brand-700;
+}
+
+@utility danger-note {
+  @apply flex items-center gap-2 rounded-lg border border-danger-200 bg-danger-50 px-3 py-2
+    text-xs text-danger-700;
+}

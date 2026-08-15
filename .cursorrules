@@ -1,0 +1,9 @@
+# ModelForge Cursor Rules
+
+- Keep Inference Engine, API Gateway, and Control Plane process-isolated.
+- CPU-only defaults: mmap on, low max_concurrent_per_model, physical cores for n_threads.
+- Never expose the inference gRPC port publicly; browser calls go through Next.js → Gateway internal routes.
+- Prefer OpenAI-compatible shapes in packages/engine.
+- Do not store raw API keys; hash with SHA-256.
+- Usage writes go through BullMQ, never synchronously on the hot path.
+- Billing adapters must support mock mode without credentials.

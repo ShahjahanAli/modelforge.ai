@@ -1,0 +1,80 @@
+syntax = "proto3";
+package inference;
+
+service InferenceEngine {
+  rpc LoadModel (LoadModelRequest) returns (LoadModelResponse);
+  rpc UnloadModel (UnloadModelRequest) returns (UnloadModelResponse);
+  rpc ListLoadedModels (Empty) returns (ModelList);
+  rpc Generate (GenerateRequest) returns (stream GenerateChunk);
+  rpc HealthCheck (Empty) returns (HealthStatus);
+}
+
+message LoadModelRequest {
+  string model_id = 1;
+  string weights_path = 2;
+  int32 context_length = 3;
+  int32 n_threads = 4;
+  string quantization = 5;
+  bool use_mmap = 6;
+}
+
+message LoadModelResponse {
+  bool success = 1;
+  string error = 2;
+  int64 load_time_ms = 3;
+  int64 ram_used_mb = 4;
+}
+
+message GenerateRequest {
+  string model_id = 1;
+  repeated ChatMessage messages = 2;
+  float temperature = 3;
+  int32 max_tokens = 4;
+  float top_p = 5;
+  repeated string stop_sequences = 6;
+  bool stream = 7;
+}
+
+message ChatMessage {
+  string role = 1;
+  string content = 2;
+}
+
+message GenerateChunk {
+  string delta = 1;
+  bool is_final = 2;
+  int32 prompt_tokens = 3;
+  int32 completion_tokens = 4;
+  string finish_reason = 5;
+}
+
+message ModelList {
+  repeated LoadedModel models = 1;
+}
+
+message LoadedModel {
+  string model_id = 1;
+  int64 ram_used_mb = 2;
+  int64 loaded_at_unix = 3;
+  int32 active_requests = 4;
+  double tokens_per_sec_avg = 5;
+}
+
+message HealthStatus {
+  bool healthy = 1;
+  int64 total_ram_mb = 2;
+  int64 used_ram_mb = 3;
+  int32 loaded_model_count = 4;
+  int32 physical_core_count = 5;
+}
+
+message Empty {}
+
+message UnloadModelRequest {
+  string model_id = 1;
+}
+
+message UnloadModelResponse {
+  bool success = 1;
+  string error = 2;
+}

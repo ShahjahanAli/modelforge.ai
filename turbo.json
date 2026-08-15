@@ -1,0 +1,55 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [".env", ".env.example"],
+  "globalEnv": [
+    "DATABASE_URL",
+    "REDIS_ENABLED",
+    "REDIS_URL",
+    "INFERENCE_ENGINE_GRPC_URL",
+    "INFERENCE_TIMEOUT_MS",
+    "JWT_SECRET",
+    "INTERNAL_SERVICE_TOKEN",
+    "CORS_ORIGIN",
+    "NEXTAUTH_URL",
+    "AUTH_SECRET",
+    "GATEWAY_INTERNAL_URL",
+    "NEXT_PUBLIC_APP_URL",
+    "BILLING_MODE",
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET",
+    "MODEL_WEIGHTS_DIR",
+    "INFERENCE_BACKEND",
+    "LLAMA_SERVER_BIN",
+    "LLAMA_SERVER_PORT_BASE",
+    "LLAMA_SERVER_STARTUP_TIMEOUT_MS",
+    "LLAMA_AUTO_LOAD",
+    "TOTAL_RAM_BUDGET_MB",
+    "DEFAULT_N_THREADS",
+    "USE_MMAP",
+    "MAX_CONCURRENT_PER_MODEL",
+    "ENABLE_CONTINUOUS_BATCHING",
+    "GRPC_PORT"
+  ],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**", "target/release/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
+    },
+    "generate": {
+      "cache": false
+    }
+  }
+}

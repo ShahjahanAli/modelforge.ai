@@ -1,0 +1,51 @@
+{
+  "name": "modelforge",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.27.0",
+  "scripts": {
+    "dev": "dotenv -e .env -- turbo run dev --parallel",
+    "build": "dotenv -e .env -- turbo run build",
+    "lint": "dotenv -e .env -- turbo run lint",
+    "typecheck": "dotenv -e .env -- turbo run typecheck",
+    "test": "dotenv -e .env -- turbo run test",
+    "db:generate": "dotenv -e .env -- pnpm --filter @modelforge/db generate",
+    "db:migrate": "dotenv -e .env -- pnpm --filter @modelforge/db migrate",
+    "db:deploy": "dotenv -e .env -- pnpm --filter @modelforge/db migrate:deploy",
+    "db:seed": "dotenv -e .env -- pnpm --filter @modelforge/db seed",
+    "db:studio": "dotenv -e .env -- pnpm --filter @modelforge/db studio",
+    "llama:fetch": "node scripts/fetch-llama-server.mjs",
+    "engine:status": "dotenv -e .env -- node scripts/engine-status.mjs",
+    "weights:scan": "dotenv -e .env -- node scripts/scan-weights.mjs",
+    "test:e2e": "dotenv -e .env -- node scripts/e2e-openai.mjs",
+    "benchmark": "dotenv -e .env -- node scripts/benchmark-openai.mjs",
+    "infra:up": "docker compose -f infra/docker-compose.dev.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.dev.yml down",
+    "infra:logs": "docker compose -f infra/docker-compose.dev.yml logs -f"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "dotenv-cli": "^11.0.0",
+    "eslint": "^10.8.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.11.0",
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.67.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "argon2",
+      "esbuild",
+      "msgpackr-extract",
+      "prisma",
+      "protobufjs",
+      "sharp"
+    ]
+  }
+}

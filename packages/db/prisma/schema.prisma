@@ -1,0 +1,167 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum ModelStatus {
+  INACTIVE
+  LOADED
+  ERROR
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+}
+
+enum BillingMode {
+  SUBSCRIPTION
+  USAGE
+}
+
+model Customer {
+  id           String         @id @default(cuid())
+  email        String         @unique
+  name         String?
+  passwordHash String
+  role         UserRole       @default(CUSTOMER)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  subscription Subscription?
+  apiKeys      ApiKey[]
+  usageEvents  UsageEvent[]
+  invoices     Invoice[]
+  quotaLedger  QuotaLedger?
+}
+
+model Plan {
+  id                String         @id @default(cuid())
+  name              String         @unique
+  displayName       String
+  monthlyTokenQuota BigInt
+  requestsPerMinute Int
+  maxConcurrent     Int
+  priceCentsMonthly Int
+  overagePerMTokIn  Int            @default(0)
+  overagePerMTokOut Int            @default(0)
+  billingMode       BillingMode    @default(SUBSCRIPTION)
+  allowedModelIds   String[]
+  subscriptions     Subscription[]
+  createdAt         DateTime       @default(now())
+}
+
+model Subscription {
+  id               String             @id @default(cuid())
+  customer         Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId       String             @unique
+  plan             Plan               @relation(fields: [planId], references: [id])
+  planId           String
+  status           SubscriptionStatus @default(ACTIVE)
+  stripeSubId      String?
+  currentPeriodStart DateTime
+  currentPeriodEnd DateTime
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+}
+
+model ApiKey {
+  id          String       @id @default(cuid())
+  customer    Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId  String
+  keyHash     String       @unique
+  keyPrefix   String
+  label       String?
+  revokedAt   DateTime?
+  createdAt   DateTime     @default(now())
+  usageEvents UsageEvent[]
+
+  @@index([customerId])
+  @@index([keyPrefix])
+}
+
+model HostedModel {
+  id              String      @id @default(cuid())
+  /// Public slug used in OpenAI-compatible API requests, e.g. "zms-coder-7b"
+  modelId         String      @unique
+  displayName     String
+  weightsPath     String
+  quantization    String
+  contextLength   Int
+  nThreads        Int         @default(8)
+  gpuLayers       Int         @default(0)
+  status          ModelStatus @default(INACTIVE)
+  pricePerMTokIn  Int
+  pricePerMTokOut Int
+  expectedTokPerSec Float?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  usageEvents     UsageEvent[]
+}
+
+model UsageEvent {
+  id               String      @id @default(cuid())
+  customer         Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId       String
+  apiKey           ApiKey      @relation(fields: [apiKeyId], references: [id])
+  apiKeyId         String
+  /// FK to HostedModel.id (cuid), not the public slug
+  model            HostedModel @relation(fields: [modelId], references: [id])
+  modelId          String
+  /// Denormalized public slug for analytics convenience
+  modelSlug        String
+  promptTokens     Int
+  completionTokens Int
+  latencyMs        Int
+  requestId        String?
+  idempotencyKey   String?     @unique
+  createdAt        DateTime    @default(now())
+
+  @@index([customerId, createdAt])
+  @@index([modelId, createdAt])
+  @@index([modelSlug, createdAt])
+}
+
+model QuotaLedger {
+  id               String   @id @default(cuid())
+  customer         Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId       String   @unique
+  periodStart      DateTime
+  periodEnd        DateTime
+  tokensUsed       BigInt   @default(0)
+  updatedAt        DateTime @updatedAt
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  customer        Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId      String
+  periodStart     DateTime
+  periodEnd       DateTime
+  amountCents     Int
+  status          InvoiceStatus @default(DRAFT)
+  stripeInvoiceId String?
+  paymentProvider String?
+  paymentRef      String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([customerId, periodStart])
+  @@unique([customerId, periodStart, periodEnd])
+}

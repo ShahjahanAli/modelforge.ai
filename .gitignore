@@ -1,36 +1,62 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# ModelForge — public repository ignore rules
+# Keep secrets, model weights, and local build artifacts out of git.
 
-# dependencies
-/node_modules
-/.pnp
+# ----- dependencies -----
+node_modules/
+.pnp
 .pnp.js
+.pnpm-store/
 
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
+# ----- environment / secrets -----
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+!.env.example
 *.pem
+*.key
+credentials.json
+**/secrets/
 
-# debug
+# ----- model weights & fetched binaries -----
+# GGUFs are large and often redistributed under their own licenses.
+*.gguf
+*.ggml
+data/models/*
+!data/models/.gitkeep
+# Prebuilt llama.cpp binaries from `pnpm llama:fetch`
+vendor/
+
+# ----- build outputs -----
+dist/
+build/
+out/
+.next/
+.turbo/
+target/
+*.tsbuildinfo
+coverage/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
-# local env files
-.env*.local
-.env
+# ----- tooling / IDE -----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# vercel
-.vercel
+# ----- databases / local runtime -----
+*.db
+*.db-journal
+prisma/*.db
+.vercel/
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# ----- OS / misc -----
+ehthumbs.db
+Desktop.ini

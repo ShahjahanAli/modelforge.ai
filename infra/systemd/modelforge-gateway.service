@@ -1,0 +1,17 @@
+[Unit]
+Description=ModelForge API Gateway
+After=network.target postgresql.service redis.service modelforge-inference.service
+Wants=modelforge-inference.service
+
+[Service]
+Type=simple
+User=modelforge
+WorkingDirectory=/opt/modelforge/apps/gateway
+EnvironmentFile=/etc/modelforge/gateway.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

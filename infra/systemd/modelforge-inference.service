@@ -1,0 +1,18 @@
+[Unit]
+Description=ModelForge Inference Engine
+After=network.target
+
+[Service]
+Type=simple
+User=modelforge
+WorkingDirectory=/opt/modelforge
+EnvironmentFile=/etc/modelforge/inference.env
+ExecStart=/opt/modelforge/bin/inference_engine
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+# Protect system from runaway RAM usage at the OS level as a last resort
+MemoryMax=48G
+
+[Install]
+WantedBy=multi-user.target
