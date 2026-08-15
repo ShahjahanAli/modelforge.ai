@@ -1,134 +1,286 @@
 # ModelForge
 
-**Self-hosted LLM runtime platform** — serve GGUF models on your own hardware with an OpenAI-compatible API, usage metering, and customer/admin dashboards.
+> A self-hosted LLM runtime platform for serving GGUF models through an
+> OpenAI-compatible API—with model lifecycle management, usage metering,
+> billing primitives, and separate customer and administrator portals.
 
-ModelForge is designed for teams that need **data residency** and **CPU-first** inference: model weights never leave your machine, and the default backend needs no C++ toolchain.
+[![License: MIT](https://img.shields.io/badge/License-MIT-6366f1.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=next.js&logoColor=white)](https://nextjs.org/)
+[![llama.cpp](https://img.shields.io/badge/Inference-llama.cpp-0891b2)](https://github.com/ggml-org/llama.cpp)
 
+ModelForge is built for teams that need private, CPU-first inference and data
+residency. Model weights and prompts remain on infrastructure you control.
+The default backend uses prebuilt `llama-server` binaries, so local operators
+do not need a C++ compiler or CUDA toolchain.
+
+## Highlights
+
+- **OpenAI-compatible API** — streaming and non-streaming
+  `/v1/chat/completions`
+- **LM Studio-style local serving** — discover GGUF files, register them, and
+  load them on demand
+- **Process-isolated inference** — each loaded model runs in a loopback-only
+  `llama-server` process
+- **RAM-aware model pool** — configurable budget with least-recently-used
+  eviction of idle models
+- **Multi-tenant access** — plans, API keys, quotas, rate limits, and model
+  entitlements
+- **Operations console** — model registry, infrastructure status, customers,
+  and revenue views
+- **Usage and billing pipeline** — token metering, BullMQ workers, invoices,
+  and pluggable payment adapters
+- **CPU-first defaults** — mmap, physical-core thread sizing, and conservative
+  per-model concurrency
+
+## System architecture
+
+ModelForge keeps the web control plane, API gateway, and inference runtime
+separate. Only the web application and API gateway are intended to be exposed.
+Inference ports remain private on loopback or an internal network.
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        Browser[Web browser]
+        SDK[OpenAI SDK / API client]
+    end
+
+    subgraph ControlPlane["Control plane"]
+        Web["Next.js 16<br/>Auth.js + Tailwind CSS"]
+    end
+
+    subgraph GatewayPlane["API gateway"]
+        Gateway["Express 5<br/>Auth · Quotas · Metering"]
+        UsageWorker["Usage worker"]
+        InvoiceWorker["Invoice worker"]
+    end
+
+    subgraph DataPlane["Inference data plane — private"]
+        Pool["Model process pool<br/>RAM budget + LRU"]
+        LlamaA["llama-server<br/>Model A"]
+        LlamaB["llama-server<br/>Model B"]
+        Rust["Optional Rust gRPC engine<br/>Continuous batching"]
+        Weights[("GGUF weights")]
+    end
+
+    subgraph Storage
+        Postgres[("PostgreSQL")]
+        Redis[("Redis / BullMQ<br/>optional locally")]
+    end
+
+    Browser -->|HTTPS| Web
+    Web -->|internal token| Gateway
+    SDK -->|Bearer API key| Gateway
+    Gateway --> Pool
+    Pool --> LlamaA
+    Pool --> LlamaB
+    Gateway -. optional backend .-> Rust
+    Weights --> LlamaA
+    Weights --> LlamaB
+    Weights --> Rust
+    Gateway --> Postgres
+    Gateway -->|usage jobs| Redis
+    Redis --> UsageWorker
+    Redis --> InvoiceWorker
+    UsageWorker --> Postgres
+    InvoiceWorker --> Postgres
 ```
-Browser / SDK  →  Gateway (:3000)  →  llama-server (loopback)
-                       ↕
-                 PostgreSQL (+ optional Redis)
-                       ↕
-              Next.js control plane (:3001)
-```
 
-## Why ModelForge
+### Component responsibilities
 
-| Capability | Detail |
+| Component | Responsibility |
 |---|---|
-| OpenAI-compatible API | Drop-in `/v1/chat/completions` (streaming + non-streaming) |
-| Local GGUF serving | Prebuilt [llama.cpp](https://github.com/ggml-org/llama.cpp) binaries — LM Studio-style, no compiler |
-| On-demand loading | Models warm on first request; idle models are LRU-evicted against a RAM budget |
-| Multi-tenant control plane | Customer portal (keys, usage, billing) + admin ops (registry, infra, revenue) |
-| Metering & billing | Token usage → Postgres (or BullMQ); mock / Stripe / bKash / Nagad adapters |
-| Process isolation | Inference stays on loopback; only the gateway is public |
+| `apps/web` | Authenticated customer and admin UI; browser traffic reaches internal services through server-side routes/actions |
+| `apps/gateway` | Public OpenAI API, API-key authentication, plan enforcement, quotas, inference orchestration, and metering |
+| `llama-server` pool | Default inference backend; one private OS process per loaded model |
+| `apps/inference-engine` | Optional Rust gRPC backend with mmap model loading and continuous batching |
+| PostgreSQL | Users, subscriptions, plans, model registry, API-key hashes, usage events, and invoices |
+| Redis / BullMQ | Production-grade asynchronous usage and invoice jobs; optional for local development |
 
-## Stack
+## Request and data flow
+
+### Chat completion
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as OpenAI client
+    participant G as API gateway
+    participant DB as PostgreSQL
+    participant P as Model pool
+    participant L as llama-server
+    participant Q as BullMQ / usage store
+
+    C->>G: POST /v1/chat/completions + Bearer mf_...
+    G->>DB: Verify API-key hash, plan, model access, quota
+    DB-->>G: Customer + entitlement
+    G->>P: Resolve registered model
+
+    alt Model is not resident and auto-load is enabled
+        P->>DB: Read hosted-model configuration
+        P->>L: Spawn with GGUF, context, threads, loopback port
+        L-->>P: Health ready
+    end
+
+    G->>L: OpenAI-compatible completion request
+    loop Streaming response
+        L-->>G: Token delta
+        G-->>C: Server-Sent Event
+    end
+    L-->>G: Final usage + finish reason
+    G->>Q: Enqueue metering event
+    G-->>C: [DONE]
+```
+
+When Redis is enabled, usage events are written asynchronously through BullMQ.
+For lightweight local setups with `REDIS_ENABLED=false`, ModelForge uses the
+documented direct-Postgres fallback.
+
+### Model lifecycle
+
+```mermaid
+flowchart LR
+    Copy["Copy .gguf into<br/>MODEL_WEIGHTS_DIR"]
+    Scan["Filesystem scan"]
+    Register["Register metadata<br/>in PostgreSQL"]
+    Entitle["Grant model<br/>to plans"]
+    Warm{"Warm strategy"}
+    Admin["Admin clicks Load"]
+    First["First API request"]
+    Spawn["Spawn private<br/>llama-server"]
+    Resident["Resident in RAM"]
+    Evict["LRU eviction<br/>when budget is exceeded"]
+
+    Copy --> Scan --> Register --> Entitle --> Warm
+    Warm -->|manual| Admin --> Spawn
+    Warm -->|LLAMA_AUTO_LOAD=true| First --> Spawn
+    Spawn --> Resident --> Evict
+    Evict -. reload on demand .-> Spawn
+```
+
+Copying a model file does not automatically expose it to customers. Registration
+creates the catalog entry, while plan entitlement determines who can call it.
+
+## Technology stack
 
 | Layer | Technology |
 |---|---|
-| Control plane | Next.js 16, Tailwind CSS 4, Auth.js |
+| Control plane | Next.js 16, React, Tailwind CSS 4, Auth.js |
 | API gateway | Express 5, Zod, Prisma |
-| Inference (default) | Prebuilt `llama-server` process pool |
-| Inference (optional) | Rust gRPC engine with continuous batching |
-| Data | PostgreSQL · Redis optional |
-| Monorepo | pnpm + Turborepo |
+| Default inference | Prebuilt `llama-server` from llama.cpp |
+| Optional inference | Rust, tonic gRPC, `llama-cpp-2` |
+| Data | PostgreSQL 16 |
+| Queueing | Redis 7, BullMQ |
+| Billing | Mock, Stripe, bKash, and Nagad adapters |
+| Tooling | TypeScript, pnpm, Turborepo, Vitest, ESLint |
 
 ## Repository layout
 
-```
+```text
 apps/
-  gateway/           Public OpenAI-compatible API + llama-server pool
-  web/               Customer & admin dashboards
-  inference-engine/  Optional Rust + llama.cpp gRPC worker
+├── gateway/            OpenAI API, auth, quotas, metering, model pool
+├── web/                Customer and administrator control plane
+└── inference-engine/   Optional Rust gRPC inference backend
 packages/
-  db/                Prisma schema, migrations, seed
-  engine/            Shared OpenAI schemas & error types
-  billing/           Invoice math + payment adapters
-  config/            Shared TS / ESLint config
-scripts/             llama:fetch, weights scan, engine status, e2e
-infra/               Docker Compose (Postgres/Redis), systemd units
+├── billing/            Invoice calculation and payment adapters
+├── config/             Shared TypeScript and ESLint configuration
+├── db/                 Prisma schema, migrations, seed data
+└── engine/             Shared OpenAI schemas and error contracts
+infra/
+├── docker-compose.dev.yml
+└── systemd/            Example production service units
+scripts/                Binary fetch, model scan, diagnostics, E2E, benchmark
 ```
 
 ## Prerequisites
 
-- **Node.js 20+** and **pnpm 10+**
-- **PostgreSQL** (local install or Docker)
-- At least one **`.gguf`** model file
-- Redis is optional — set `REDIS_ENABLED=false` for local development
+- Node.js **20+**
+- pnpm **10+**
+- PostgreSQL, either local or through Docker
+- A compatible `.gguf` model
+- Redis is recommended for production but optional for local development
 
-No C++ toolchain is required for the default `llama-server` backend.
+The default `llama-server` backend does **not** require Rust, CMake, Clang,
+Visual Studio Build Tools, CUDA, or a system-wide llama.cpp installation.
 
 ## Quick start
 
 ```bash
-# 1. Clone & configure
-cp .env.example .env
-# Edit .env — set DATABASE_URL, JWT_SECRET, AUTH_SECRET,
-# INTERNAL_SERVICE_TOKEN, and an absolute MODEL_WEIGHTS_DIR
+# 1. Install dependencies
+pnpm install
 
-# 2. Infrastructure (skip if you already have Postgres)
+# 2. Create local configuration
+cp .env.example .env
+
+# PowerShell equivalent:
+# Copy-Item .env.example .env
+
+# 3. Start PostgreSQL and Redis with Docker
 pnpm infra:up
 
-# 3. Install & database
-pnpm install
+# 4. Generate the Prisma client, apply migrations, and seed
 pnpm db:generate
 pnpm db:deploy
 pnpm db:seed
 
-# 4. Shared packages
-pnpm --filter @modelforge/engine build
-pnpm --filter @modelforge/db build
-pnpm --filter @modelforge/billing build
-
-# 5. Fetch prebuilt llama.cpp binaries (~18 MB)
+# 5. Download the official prebuilt llama.cpp CPU binaries
 pnpm llama:fetch
 
-# 6. Run gateway + web
+# 6. Start the gateway and control plane
 pnpm dev
 ```
 
-| Service | URL |
-|---|---|
-| Dashboard | http://localhost:3001 |
-| API | http://localhost:3000/v1 |
-| Health | http://localhost:3000/healthz |
+Before step 4, update `.env` with secure local values and set
+`MODEL_WEIGHTS_DIR` to an **absolute path**.
 
-### Seed accounts
+| Service | Local URL |
+|---|---|
+| Control plane | <http://localhost:3001> |
+| OpenAI API | <http://localhost:3000/v1> |
+| Gateway health | <http://localhost:3000/healthz> |
+
+### Development seed accounts
 
 | Email | Password | Role |
 |---|---|---|
-| `admin@modelforge.local` | `admin123` | Admin |
+| `admin@modelforge.local` | `admin123` | Administrator |
 | `demo@modelforge.local` | `demo123` | Customer |
 
-The seed prints a one-time demo API key (`mf_…`). **Change all secrets before any public or production deploy.**
+These credentials are for local development only. The seed also prints a
+one-time API key. Rotate all secrets and remove or replace seeded credentials
+before any shared or production deployment.
 
-## Adding a model
+## Add and serve a model
 
-1. Set `MODEL_WEIGHTS_DIR` in `.env` to an **absolute** path (gateway and workers use different working directories, so relative paths resolve incorrectly).
-2. Copy a `.gguf` anywhere under that directory (subfolders are scanned).
+1. Configure an absolute `MODEL_WEIGHTS_DIR` in `.env`.
+2. Copy a GGUF file anywhere below that directory. Nested folders are supported.
 3. Confirm discovery:
 
+   ```bash
+   pnpm weights:scan
+   ```
+
+4. Sign in as an administrator and open **Model Registry** at `/admin/models`.
+5. Register the discovered file and review its slug, quantization, context
+   length, thread count, and pricing.
+6. Grant the model to the appropriate plans.
+7. Optionally pre-warm it from **Infrastructure** at `/admin/infra`.
+
+With `LLAMA_AUTO_LOAD=true`, the first authorized API request starts the model
+automatically.
+
 ```bash
-pnpm weights:scan
-```
-
-4. Sign in as admin → **Model Registry** (`/admin/models`):
-   - The file appears under **Discovered on disk** → **Register**
-   - **Grant to all plans** so customers can call it
-5. Optionally warm it from **Infrastructure** (`/admin/infra`), or leave `LLAMA_AUTO_LOAD=true` so the first API request loads it.
-
-Registration writes a Postgres catalog row — dropping a file on disk alone is not enough.
-
-```bash
-# Inspect engine / registry / resident pool
+# Inspect backend health, discovered files, and resident models
 pnpm engine:status
 
-# Warm a registered model
+# Warm a registered model by slug
 pnpm engine:status your-model-slug
 ```
 
-### Call the API
+## OpenAI-compatible API
+
+### cURL
 
 ```bash
 curl http://localhost:3000/v1/chat/completions \
@@ -136,107 +288,192 @@ curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "your-model-slug",
-    "messages": [{"role":"user","content":"Hello"}],
+    "messages": [
+      {"role": "system", "content": "You are a concise assistant."},
+      {"role": "user", "content": "Explain mmap in one sentence."}
+    ],
+    "temperature": 0.2,
     "max_tokens": 256,
     "stream": false
   }'
 ```
 
-Compatible with the official OpenAI SDKs — point `baseURL` at `http://localhost:3000/v1`.
+### OpenAI JavaScript SDK
+
+```ts
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.MODELFORGE_API_KEY,
+  baseURL: "http://localhost:3000/v1",
+});
+
+const response = await client.chat.completions.create({
+  model: "your-model-slug",
+  messages: [{ role: "user", content: "Hello from ModelForge" }],
+});
+
+console.log(response.choices[0]?.message.content);
+```
+
+Streaming uses the standard OpenAI Server-Sent Events format and terminates
+with `data: [DONE]`.
 
 ### Reasoning models
 
-Some models (e.g. Liquid AI LFM2.5) emit chain-of-thought in a separate `reasoning_content` field. ModelForge returns standard OpenAI `content` only. Use a generous `max_tokens` so the reasoning budget does not consume the whole limit. All generated tokens are billed.
+Some reasoning models consume part of `max_tokens` before producing visible
+assistant content. Use an appropriate token budget; a very small limit can
+produce an empty `content` field even though reasoning tokens were generated.
+All generated tokens count toward metering.
 
 ## Inference backends
 
-| `INFERENCE_BACKEND` | Compiler needed? | Notes |
-|---|---|---|
-| `llama-server` (default) | No | Prebuilt binaries; one loopback process per loaded model |
-| `grpc` | Yes (MSVC/Clang + CMake) | Optional Rust engine with continuous batching |
+| Backend | Compiler required | Recommended use |
+|---|---:|---|
+| `llama-server` | No | Default local and production CPU serving |
+| `grpc` | Yes | Optional Rust path for custom continuous batching |
 
-Stay on `llama-server` unless you specifically need the Rust batching path.
+Select the backend with `INFERENCE_BACKEND`.
 
 ```bash
-# Optional Rust engine (INFERENCE_BACKEND=grpc)
-# Windows: scripts/build-engine.cmd
-# Then: cd apps/inference-engine && cargo run --release
+# Default
+INFERENCE_BACKEND=llama-server
+
+# Optional Rust engine
+INFERENCE_BACKEND=grpc
 ```
+
+The Rust backend is an advanced option. On Windows it requires an MSVC/Clang
+and CMake toolchain; on Linux it requires an equivalent native build toolchain.
 
 ## Configuration
 
-Copy `.env.example` → `.env`. Important variables:
+Copy `.env.example` to `.env`. The most important settings are:
 
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `REDIS_ENABLED` | `false` skips Redis/BullMQ (in-memory limits + direct usage writes) |
-| `MODEL_WEIGHTS_DIR` | Absolute path to GGUF storage |
+| `REDIS_ENABLED` | Enables Redis-backed rate limits and BullMQ workers |
+| `REDIS_URL` | Redis connection string |
+| `MODEL_WEIGHTS_DIR` | Absolute path to local GGUF storage |
 | `INFERENCE_BACKEND` | `llama-server` or `grpc` |
-| `LLAMA_SERVER_BIN` | Path to `llama-server` (filled by `pnpm llama:fetch`) |
-| `LLAMA_AUTO_LOAD` | Warm models on first request (`true` recommended) |
-| `TOTAL_RAM_BUDGET_MB` | Soft cap for resident models (LRU eviction) |
-| `BILLING_MODE` | `mock` (default) or live Stripe / BD payment keys |
-| `JWT_SECRET` / `AUTH_SECRET` / `INTERNAL_SERVICE_TOKEN` | Auth secrets — rotate for production |
+| `LLAMA_SERVER_BIN` | Optional explicit path to `llama-server` |
+| `LLAMA_AUTO_LOAD` | Loads an entitled model on its first request |
+| `TOTAL_RAM_BUDGET_MB` | Model-pool RAM budget used for LRU decisions |
+| `MAX_CONCURRENT_PER_MODEL` | Per-model concurrency ceiling |
+| `INTERNAL_SERVICE_TOKEN` | Protects internal gateway routes |
+| `JWT_SECRET` / `AUTH_SECRET` | Gateway and Auth.js signing secrets |
+| `BILLING_MODE` | `mock` or a configured live payment flow |
 
-## Billing
+Never commit `.env`. The repository includes `.env.example` with development
+placeholders only.
 
-- **`BILLING_MODE=mock`** — local checkout without credentials
-- **Stripe** — set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`
-- **bKash / Nagad** — Bangladesh invoice-first adapters (stubs ready for credentials)
+## Authentication, quotas, and billing
 
-API keys are stored as **SHA-256 hashes** only; the raw key is shown once at creation.
+- Raw API keys are shown once; only **SHA-256 hashes** are persisted.
+- Every API key belongs to a customer with a subscription and plan.
+- Plans define model access, token quota, requests per minute, concurrency,
+  and overage pricing.
+- Usage records include prompt tokens, completion tokens, model, latency, and
+  an idempotency key.
+- `BILLING_MODE=mock` works without credentials.
+- Stripe can be enabled with its secret and webhook keys.
+- bKash and Nagad adapters provide extension points for Bangladesh payments.
 
-## Development
+## Development and verification
 
 ```bash
+# Repository checks
 pnpm lint
 pnpm typecheck
 pnpm test
 
-# OpenAI SDK smoke (gateway running)
+# Confirm the configured weights directory
+pnpm weights:scan
+
+# Inspect inference state
+pnpm engine:status
+
+# OpenAI SDK compatibility (gateway must be running)
 MODELFORGE_API_KEY=mf_YOUR_KEY pnpm test:e2e
+
+# Basic concurrency benchmark
 MODELFORGE_API_KEY=mf_YOUR_KEY pnpm benchmark
 
-# llama-server integration (needs a GGUF under MODEL_WEIGHTS_DIR)
+# Real llama-server integration tests
 pnpm --filter @modelforge/gateway test
 ```
 
-## Production notes
+## Production guidance
 
-- Prefer physical core count for `DEFAULT_N_THREADS` / per-model `n_threads`
-- Keep `MAX_CONCURRENT_PER_MODEL` low on CPU (1–2)
-- Leave ~25–30% RAM headroom under `TOTAL_RAM_BUDGET_MB`
-- Never expose inference ports publicly — only the gateway
-- Example systemd units: `infra/systemd/`
-- With Redis enabled, also run:
-  - `pnpm --filter @modelforge/gateway worker`
-  - `pnpm --filter @modelforge/gateway invoice-worker`
+- Put TLS and a reverse proxy or ingress in front of the web app and gateway.
+- Never expose `llama-server` or the inference gRPC port to the public network.
+- Use a unique, high-entropy `INTERNAL_SERVICE_TOKEN`, `JWT_SECRET`, and
+  `AUTH_SECRET`.
+- Enable Redis and run the usage and invoice workers:
 
-## Security
+  ```bash
+  pnpm --filter @modelforge/gateway worker
+  pnpm --filter @modelforge/gateway invoice-worker
+  ```
 
-- Inference processes bind to **127.0.0.1** only
-- Internal admin routes require `x-internal-token`
-- Customer routes require hashed API keys or Auth.js sessions
-- Admin UI is role-gated; customers never see ops controls
+- Keep `MAX_CONCURRENT_PER_MODEL` low for CPU inference, commonly 1–2.
+- Set model threads near the physical-core count, not logical thread count.
+- Reserve approximately 25–30% of system RAM outside
+  `TOTAL_RAM_BUDGET_MB`.
+- Keep mmap enabled unless the storage or deployment environment requires
+  otherwise.
+- Back up PostgreSQL and treat model files as separately managed artifacts.
+- Review the example service definitions in `infra/systemd/` before deployment.
 
-## Status
+## Security model
 
-Early public release. Core local serving, metering, and dashboards work; payment adapters default to mock mode. Issues and PRs welcome.
+```mermaid
+flowchart TD
+    Internet((Internet))
+    Public["Public boundary<br/>Web + Gateway"]
+    Internal["Internal boundary<br/>service token"]
+    Inference["Inference boundary<br/>loopback / private network"]
+    Storage["Persistence boundary<br/>PostgreSQL + Redis"]
 
-## What is not in this repository
+    Internet -->|HTTPS| Public
+    Public -->|x-internal-token| Internal
+    Internal --> Inference
+    Internal --> Storage
+```
 
-| Ignored | Why |
+- Helmet and explicit CORS configuration protect the Express surface.
+- Public inference calls require a valid hashed API key.
+- Browser sessions are handled by Auth.js with role-gated admin routes.
+- Internal management routes require `x-internal-token`.
+- Model processes bind to `127.0.0.1`.
+- Browser clients do not call private inference ports directly.
+- GGUF weights, prebuilt runtime binaries, secrets, and generated artifacts are
+  excluded from version control.
+
+Security reports should not include raw credentials, API keys, model weights,
+or customer data in a public issue.
+
+## Files intentionally excluded from Git
+
+| Path | Reason |
 |---|---|
-| `.env` | Secrets — copy from `.env.example` |
-| `data/models/*.gguf` | Large model weights; place your own files here |
-| `vendor/llama.cpp` | Fetched by `pnpm llama:fetch` |
-| `node_modules/`, `.next/`, `dist/`, `target/` | Install / build outputs |
+| `.env` | Contains local credentials and secrets |
+| `data/models/*.gguf` | Large model artifacts with independent licenses |
+| `vendor/llama.cpp` | Reproducibly fetched with `pnpm llama:fetch` |
+| `node_modules/`, `.next/`, `dist/`, `target/` | Dependency and build outputs |
+
+## Project status
+
+ModelForge is an early public release. Local GGUF serving, streaming,
+multi-tenant authorization, metering, model operations, and dashboards are
+functional. Payment integrations default to mock mode and should be validated
+against provider sandboxes before production use.
+
+Issues and focused pull requests are welcome.
 
 ## License
 
-Add a `LICENSE` file before publishing (e.g. MIT or Apache-2.0). Until then, all rights reserved by the authors.
+ModelForge is released under the [MIT License](LICENSE).
 
----
-
-Built for teams that need **on-prem / private-cloud LLM APIs** without shipping prompts or weights to a third-party host.
+Copyright © 2026 Shahjahan Ali.
