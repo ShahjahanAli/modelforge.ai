@@ -1,6 +1,6 @@
 "use client";
 
-import { signIn } from "next-auth/react";
+import { getSession, signIn } from "next-auth/react";
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -23,7 +23,8 @@ export default function LoginPage() {
       setError("Invalid email or password");
       return;
     }
-    router.push("/dashboard");
+    const session = await getSession();
+    router.push(session?.user.role === "ADMIN" ? "/admin/dashboard" : "/dashboard");
     router.refresh();
   }
 

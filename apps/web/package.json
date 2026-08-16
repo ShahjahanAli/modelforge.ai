@@ -13,6 +13,7 @@
   "dependencies": {
     "@modelforge/billing": "workspace:*",
     "@modelforge/db": "workspace:*",
+    "@modelforge/platform": "workspace:*",
     "@tailwindcss/postcss": "^4.3.3",
     "argon2": "^0.43.0",
     "lucide-react": "^0.511.0",

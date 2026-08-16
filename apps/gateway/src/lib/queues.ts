@@ -1,9 +1,11 @@
 import { Queue } from "bullmq";
 import { redisConnection, isRedisEnabled } from "../lib/redis.js";
-import { persistUsageEvent } from "../lib/usage.js";
+import { persistUsageEvent, type UsageJobExtended } from "../lib/usage.js";
 
 export const USAGE_QUEUE = "usage-events";
 export const INVOICE_QUEUE = "invoice-jobs";
+export const EVAL_QUEUE = "eval-jobs";
+export const SLO_QUEUE = "slo-jobs";
 
 export interface UsageJob {
   customerId: string;
@@ -15,6 +17,10 @@ export interface UsageJob {
   latencyMs: number;
   requestId: string;
   idempotencyKey: string;
+  inferenceRequestId?: string;
+  costMicros?: string;
+  pricePerMTokIn?: number;
+  pricePerMTokOut?: number;
 }
 
 let usageQueue: Queue<UsageJob> | null = null;
@@ -34,7 +40,7 @@ export function getUsageQueue() {
 /** Enqueue via BullMQ when Redis is on; write Postgres directly when Redis is off. */
 export async function enqueueUsage(job: UsageJob) {
   if (!isRedisEnabled()) {
-    await persistUsageEvent(job);
+    await persistUsageEvent(job as UsageJobExtended);
     return;
   }
 

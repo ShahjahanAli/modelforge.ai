@@ -3,6 +3,8 @@ import express from "express";
 import helmet from "helmet";
 import { randomUUID } from "node:crypto";
 import { loadEnv } from "./lib/env.js";
+import { ensureLocalNode } from "./lib/modernJobs.js";
+import { ensureSigningKey } from "./lib/receipts.js";
 import { internalRouter } from "./routes/internal.js";
 import { v1Router } from "./routes/v1.js";
 
@@ -35,13 +37,20 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   res.status(500).json({ error: { type: "server_error", message: "Internal error" } });
 });
 
-const server = app.listen(env.GATEWAY_PORT, () => {
+const server = app.listen(env.GATEWAY_PORT, async () => {
   console.log(`ModelForge gateway listening on :${env.GATEWAY_PORT}`);
   console.log(
     env.REDIS_ENABLED
       ? "Redis enabled (BullMQ usage workers expected)"
       : "Redis disabled (in-memory rate limits + direct Postgres usage writes)",
   );
+  try {
+    await ensureLocalNode();
+    await ensureSigningKey();
+    console.log("Local node + signing key ready");
+  } catch (error) {
+    console.warn("Modern platform bootstrap deferred:", error);
+  }
 });
 
 function shutdown() {

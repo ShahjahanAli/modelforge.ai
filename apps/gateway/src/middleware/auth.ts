@@ -6,6 +6,7 @@ export interface AuthContext {
   customerId: string;
   apiKeyId: string;
   email: string;
+  planId: string;
   planName: string;
   monthlyTokenQuota: bigint;
   requestsPerMinute: number;
@@ -55,6 +56,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       customerId: apiKey.customerId,
       apiKeyId: apiKey.id,
       email: apiKey.customer.email,
+      planId: sub.plan.id,
       planName: sub.plan.name,
       monthlyTokenQuota: sub.plan.monthlyTokenQuota,
       requestsPerMinute: sub.plan.requestsPerMinute,

@@ -10,6 +10,7 @@ import { loadModelAction, unloadModelAction } from "./actions";
 
 interface EngineHealth {
   healthy?: boolean;
+  backend?: string;
   total_ram_mb?: number;
   used_ram_mb?: number;
   loaded_model_count?: number;
@@ -48,7 +49,7 @@ export default async function AdminInfraPage() {
       <PageHeader
         eyebrow="Operations"
         title="Inference infrastructure"
-        description="Live view of the Rust engine's model pool, RAM budget, and per-model throughput over gRPC."
+        description="Live view of the active inference backend, model pool, RAM budget, and per-model throughput."
         actions={
           <Badge tone={health.healthy ? "ok" : "danger"} dot pulse={health.healthy}>
             {health.healthy ? "engine healthy" : "engine down"}
@@ -68,7 +69,7 @@ export default async function AdminInfraPage() {
           value={health.healthy ? "ONLINE" : "OFFLINE"}
           icon={ServerCog}
           accent={health.healthy ? "ok" : "danger"}
-          hint="gRPC :50051"
+          hint={health.backend ?? "backend unavailable"}
         />
         <StatCard
           label="RAM budget"

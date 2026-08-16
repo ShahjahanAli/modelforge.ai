@@ -35,16 +35,20 @@ export function AppShell({
   email,
   role,
   variant = "workspace",
+  overlay,
   children,
 }: {
   groups: NavGroup[];
   email: string;
   role?: string;
   variant?: ShellVariant;
+  /** Floating chrome (chat bubble, toasts) rendered outside the page content flow. */
+  overlay?: ReactNode;
   children: ReactNode;
 }) {
   const skin = chrome[variant];
   const isAdminShell = variant === "admin";
+  const homeHref = isAdminShell ? "/admin/dashboard" : "/dashboard";
   const initials = email.slice(0, 2).toUpperCase();
 
   return (
@@ -55,7 +59,7 @@ export function AppShell({
       <aside
         className={`sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-line px-3 py-4 lg:flex xl:w-68 xl:px-4 ${skin.sidebar}`}
       >
-        <Link href="/dashboard" className="mb-6 flex items-center gap-2.5 px-2">
+        <Link href={homeHref} className="mb-6 flex items-center gap-2.5 px-2">
           <span className={`grid size-8 place-items-center rounded-lg border ${skin.mark}`}>
             {isAdminShell ? (
               <ShieldCheck className={`size-4 ${skin.markIcon}`} strokeWidth={2.2} aria-hidden />
@@ -108,7 +112,7 @@ export function AppShell({
           <div className="flex items-center gap-2 px-3 py-2.5 sm:px-5 sm:py-3 lg:px-7">
             <MobileNav groups={groups} email={email} role={role} variant={variant} />
 
-            <Link href="/dashboard" className="flex items-center gap-2 lg:hidden">
+            <Link href={homeHref} className="flex items-center gap-2 lg:hidden">
               {isAdminShell ? (
                 <ShieldCheck className={`size-4 ${skin.markIcon}`} strokeWidth={2.2} aria-hidden />
               ) : (
@@ -142,8 +146,8 @@ export function AppShell({
             <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
               {isAdminShell ? (
                 <>
-                  <Link href="/dashboard" className="btn-secondary text-xs">
-                    Exit admin
+                  <Link href="/models" className="btn-secondary text-xs">
+                    Customer view
                   </Link>
                   <Link href="/admin/models" className="btn hidden text-xs sm:inline-flex">
                     Add model
@@ -167,6 +171,8 @@ export function AppShell({
           <div className="w-full space-y-4 sm:space-y-6">{children}</div>
         </main>
       </div>
+
+      {overlay}
     </div>
   );
 }

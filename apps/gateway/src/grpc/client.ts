@@ -27,6 +27,20 @@ export interface HealthStatus {
   used_ram_mb: number;
   loaded_model_count: number;
   physical_core_count: number;
+  logical_core_count?: number;
+  cpu_model?: string;
+  cpu_speed_mhz?: number;
+  cpu_usage_percent?: number;
+  host_total_ram_mb?: number;
+  host_free_ram_mb?: number;
+  host_uptime_seconds?: number;
+  gateway_rss_mb?: number;
+  load_average_1m?: number;
+  hostname?: string;
+  platform?: string;
+  platform_release?: string;
+  arch?: string;
+  node_version?: string;
 }
 
 type Client = {

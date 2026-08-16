@@ -1,0 +1,195 @@
+"use client";
+
+import { Bot, Check, Copy, Send, Sparkles, Square, User } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  finishLabel,
+  type ChatMessage,
+  type ChatModelOption,
+  type ChatStream,
+} from "./useChatStream";
+
+interface ChatConsoleProps {
+  models: ChatModelOption[];
+  chat: ChatStream;
+  variant?: "page" | "widget";
+}
+
+const SUGGESTIONS = [
+  "Explain this platform architecture",
+  "Write a TypeScript API example",
+  "Summarize a technical concept",
+  "Create a deployment checklist",
+];
+
+export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps) {
+  const compact = variant === "widget";
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const { messages, input, setInput, streaming, send, stop } = chat;
+  const disabled = models.length === 0;
+
+  useEffect(() => {
+    transcriptRef.current?.scrollTo({
+      top: transcriptRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [messages]);
+
+  async function copyMessage(message: ChatMessage) {
+    await navigator.clipboard.writeText(message.content);
+    setCopiedId(message.id);
+    window.setTimeout(() => setCopiedId(null), 1500);
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        ref={transcriptRef}
+        className={`min-h-0 flex-1 overflow-y-auto overscroll-contain bg-surface-0/40 ${
+          compact ? "px-3 py-4" : "px-4 py-5 sm:px-6"
+        }`}
+        aria-live="polite"
+      >
+        {messages.length === 0 ? (
+          <div className="mx-auto flex h-full max-w-xl flex-col items-center justify-center text-center">
+            <span className="grid size-11 place-items-center rounded-2xl border border-brand-200 bg-brand-50 text-brand-600 shadow-sm">
+              <Sparkles className="size-5" aria-hidden />
+            </span>
+            <h3
+              className={`mt-4 font-semibold tracking-tight text-content-primary ${
+                compact ? "text-base" : "text-lg"
+              }`}
+            >
+              How can your model help?
+            </h3>
+            <p className="mt-2 max-w-md text-xs leading-6 text-content-muted sm:text-sm">
+              {disabled
+                ? "No models are enabled on your plan yet. Ask an administrator to grant model access."
+                : "Ask questions, draft content, analyze code, or test a newly connected GGUF model. Responses stream directly from your private runtime."}
+            </p>
+            {!disabled && (
+              <div className={`mt-5 grid w-full gap-2 ${compact ? "" : "sm:grid-cols-2"}`}>
+                {(compact ? SUGGESTIONS.slice(0, 3) : SUGGESTIONS).map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    className="rounded-xl border border-line bg-surface-1 px-3 py-2.5 text-left text-xs text-content-secondary transition-colors hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                    onClick={() => setInput(prompt)}
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className={`mx-auto space-y-5 ${compact ? "" : "max-w-3xl"}`}>
+            {messages.map((message) => (
+              <article
+                key={message.id}
+                className={`group flex gap-2.5 ${
+                  message.role === "user" ? "justify-end" : "justify-start"
+                }`}
+              >
+                {message.role === "assistant" && !compact && (
+                  <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-brand-100 bg-brand-50 text-brand-600">
+                    <Bot className="size-4" aria-hidden />
+                  </span>
+                )}
+                <div
+                  className={`relative max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm leading-6 shadow-sm ${
+                    message.role === "user"
+                      ? "rounded-br-md bg-brand-600 text-white"
+                      : message.error
+                        ? "rounded-bl-md border border-danger-200 bg-danger-50 text-danger-700"
+                        : "rounded-bl-md border border-line bg-surface-1 text-content-primary"
+                  }`}
+                >
+                  {message.content ? (
+                    <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                  ) : (
+                    <span className="flex items-center gap-1 py-1 text-content-muted">
+                      <span className="size-1.5 animate-pulse rounded-full bg-brand-400" />
+                      <span className="size-1.5 animate-pulse rounded-full bg-brand-400 [animation-delay:150ms]" />
+                      <span className="size-1.5 animate-pulse rounded-full bg-brand-400 [animation-delay:300ms]" />
+                    </span>
+                  )}
+                  {message.role === "assistant" && message.content && (
+                    <div className="mt-2 flex items-center justify-between gap-3 border-t border-line pt-2">
+                      <span className="font-mono text-[10px] uppercase tracking-wide text-content-muted">
+                        {finishLabel(message)}
+                      </span>
+                      <button
+                        type="button"
+                        className="text-content-muted transition-colors hover:text-content-primary"
+                        onClick={() => void copyMessage(message)}
+                        title="Copy response"
+                      >
+                        {copiedId === message.id ? (
+                          <Check className="size-3.5 text-ok-600" aria-hidden />
+                        ) : (
+                          <Copy className="size-3.5" aria-hidden />
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {message.role === "user" && !compact && (
+                  <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-line-strong bg-surface-2 text-content-secondary">
+                    <User className="size-4" aria-hidden />
+                  </span>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className={`border-t border-line bg-surface-1 ${compact ? "p-2.5" : "p-3 sm:p-4"}`}>
+        <div
+          className={`mx-auto rounded-2xl border border-line-strong bg-surface-1 p-2 shadow-[0_4px_16px_rgba(16,24,40,0.08)] focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-500/15 ${
+            compact ? "" : "max-w-3xl"
+          }`}
+        >
+          <textarea
+            className={`w-full resize-none bg-transparent px-2 py-1.5 text-sm text-content-primary outline-none placeholder:text-content-muted ${
+              compact ? "max-h-28 min-h-11" : "max-h-40 min-h-16"
+            }`}
+            placeholder={disabled ? "No models available on your plan" : "Message your model…"}
+            value={input}
+            disabled={disabled}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <div className="flex items-center justify-between gap-3 px-1">
+            <span className="text-[10px] text-content-muted">
+              {compact ? "Enter to send" : "Enter to send · Shift+Enter for newline"}
+            </span>
+            {streaming ? (
+              <button type="button" className="btn-secondary !rounded-xl" onClick={stop}>
+                <Square className="size-3.5 fill-current" aria-hidden />
+                Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn !rounded-xl"
+                onClick={() => void send()}
+                disabled={!input.trim() || disabled}
+              >
+                <Send className="size-3.5" aria-hidden />
+                Send
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

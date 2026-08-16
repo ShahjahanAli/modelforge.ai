@@ -3,8 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@modelforge/db";
 import { gatewayFetch } from "@/lib/gateway";
+import { requireAdmin } from "@/lib/session";
+import { writeAuditEvent } from "@/lib/audit";
 
 export async function upsertModelAction(formData: FormData) {
+  const admin = await requireAdmin();
   const modelId = String(formData.get("modelId"));
   const data = {
     displayName: String(formData.get("displayName")),
@@ -16,20 +19,32 @@ export async function upsertModelAction(formData: FormData) {
     pricePerMTokOut: Number(formData.get("pricePerMTokOut") || 60),
     gpuLayers: 0,
   };
-  await prisma.hostedModel.upsert({
+  const model = await prisma.hostedModel.upsert({
     where: { modelId },
     update: data,
     create: { modelId, ...data, status: "INACTIVE" },
+  });
+  await prisma.pricingVersion.create({
+    data: {
+      hostedModelId: model.id,
+      pricePerMTokIn: data.pricePerMTokIn,
+      pricePerMTokOut: data.pricePerMTokOut,
+    },
+  });
+  await writeAuditEvent({
+    actorType: "admin",
+    actorId: admin.id,
+    action: "model.upsert",
+    resourceType: "HostedModel",
+    resourceId: model.id,
+    after: { modelId, ...data },
   });
   revalidatePath("/admin/models");
   revalidatePath("/admin/infra");
 }
 
-/**
- * Registers a GGUF that the gateway found on disk. The gateway re-validates the
- * path against MODEL_WEIGHTS_DIR, so an arbitrary path cannot be injected here.
- */
 export async function registerDiscoveredAction(formData: FormData) {
+  const admin = await requireAdmin();
   await gatewayFetch("/internal/engine/models/register", {
     method: "POST",
     body: JSON.stringify({
@@ -41,24 +56,43 @@ export async function registerDiscoveredAction(formData: FormData) {
       nThreads: Number(formData.get("nThreads") || 8),
     }),
   });
+  await writeAuditEvent({
+    actorType: "admin",
+    actorId: admin.id,
+    action: "model.register_discovered",
+    resourceType: "HostedModel",
+    resourceId: String(formData.get("modelId")),
+  });
   revalidatePath("/admin/models");
   revalidatePath("/admin/infra");
 }
 
-/** Grants every plan access to a model slug so customers can actually call it. */
 export async function grantModelToAllPlansAction(formData: FormData) {
+  const admin = await requireAdmin();
   const modelId = String(formData.get("modelId"));
   const plans = await prisma.plan.findMany({ select: { id: true, allowedModelIds: true } });
   await Promise.all(
     plans
       .filter((plan) => !plan.allowedModelIds.includes(modelId))
-      .map((plan) =>
-        prisma.plan.update({
+      .map(async (plan) => {
+        await prisma.plan.update({
           where: { id: plan.id },
           data: { allowedModelIds: [...plan.allowedModelIds, modelId] },
-        }),
-      ),
+        });
+        await prisma.planModelEntitlement.upsert({
+          where: { planId_modelSlug: { planId: plan.id, modelSlug: modelId } },
+          update: {},
+          create: { planId: plan.id, modelSlug: modelId },
+        });
+      }),
   );
+  await writeAuditEvent({
+    actorType: "admin",
+    actorId: admin.id,
+    action: "model.grant_all_plans",
+    resourceType: "HostedModel",
+    resourceId: modelId,
+  });
   revalidatePath("/admin/models");
   revalidatePath("/models");
 }

@@ -36,19 +36,109 @@ enum BillingMode {
   USAGE
 }
 
+enum InferenceStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+  REJECTED
+}
+
+enum InvoiceLineType {
+  USAGE
+  SUBSCRIPTION
+  CREDIT
+  ADJUSTMENT
+  OVERAGE
+}
+
+enum PolicyKind {
+  ROUTING
+  BUDGET
+  DATA
+  TOOL
+  SLO
+}
+
+enum PolicyScope {
+  PLATFORM
+  PLAN
+  CUSTOMER
+  API_KEY
+}
+
+enum ReservationStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  CANCELED
+  PREEMPTED
+}
+
+enum NodeStatus {
+  ONLINE
+  DEGRADED
+  OFFLINE
+  QUARANTINED
+}
+
+enum DeploymentStatus {
+  PENDING
+  WARM
+  COLD
+  DRAINING
+  FAILED
+}
+
+enum SloWindowStatus {
+  HEALTHY
+  AT_RISK
+  BREACHED
+}
+
+enum EvalRunStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum IngestionStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum KnowledgeSensitivity {
+  PUBLIC
+  INTERNAL
+  CONFIDENTIAL
+}
+
 model Customer {
-  id           String         @id @default(cuid())
-  email        String         @unique
-  name         String?
-  passwordHash String
-  role         UserRole       @default(CUSTOMER)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  subscription Subscription?
-  apiKeys      ApiKey[]
-  usageEvents  UsageEvent[]
-  invoices     Invoice[]
-  quotaLedger  QuotaLedger?
+  id             String              @id @default(cuid())
+  email          String              @unique
+  name           String?
+  passwordHash   String
+  role           UserRole            @default(CUSTOMER)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  subscription   Subscription?
+  apiKeys        ApiKey[]
+  usageEvents    UsageEvent[]
+  invoices       Invoice[]
+  quotaLedger    QuotaLedger?
+  inferenceReqs  InferenceRequest[]
+  budgets        BudgetAccount[]
+  reservations   ResidencyReservation[]
+  policyBindings PolicyBinding[]
+  auditEvents    AuditEvent[]
+  knowledgeBases KnowledgeBase[]
+  memoryNamespaces MemoryNamespace[]
+  serviceCredits ServiceCredit[]
+  sloWindows     SloWindow[]
 }
 
 model Plan {
@@ -64,55 +154,97 @@ model Plan {
   billingMode       BillingMode    @default(SUBSCRIPTION)
   allowedModelIds   String[]
   subscriptions     Subscription[]
+  entitlements      PlanModelEntitlement[]
+  policyBindings    PolicyBinding[]
   createdAt         DateTime       @default(now())
 }
 
+model PlanModelEntitlement {
+  id        String   @id @default(cuid())
+  plan      Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planId    String
+  modelSlug String
+  createdAt DateTime @default(now())
+
+  @@unique([planId, modelSlug])
+  @@index([modelSlug])
+}
+
 model Subscription {
-  id               String             @id @default(cuid())
-  customer         Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  customerId       String             @unique
-  plan             Plan               @relation(fields: [planId], references: [id])
-  planId           String
-  status           SubscriptionStatus @default(ACTIVE)
-  stripeSubId      String?
+  id                 String             @id @default(cuid())
+  customer           Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId         String             @unique
+  plan               Plan               @relation(fields: [planId], references: [id])
+  planId             String
+  status             SubscriptionStatus @default(ACTIVE)
+  stripeSubId        String?
   currentPeriodStart DateTime
-  currentPeriodEnd DateTime
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  currentPeriodEnd   DateTime
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 }
 
 model ApiKey {
-  id          String       @id @default(cuid())
-  customer    Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  customerId  String
-  keyHash     String       @unique
-  keyPrefix   String
-  label       String?
-  revokedAt   DateTime?
-  createdAt   DateTime     @default(now())
-  usageEvents UsageEvent[]
+  id             String              @id @default(cuid())
+  customer       Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId     String
+  keyHash        String              @unique
+  keyPrefix      String
+  label          String?
+  scopes         String[]            @default([])
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime            @default(now())
+  usageEvents    UsageEvent[]
+  inferenceReqs  InferenceRequest[]
+  policyBindings PolicyBinding[]
+  budgets        BudgetAccount[]
 
   @@index([customerId])
   @@index([keyPrefix])
 }
 
 model HostedModel {
+  id               String             @id @default(cuid())
+  modelId          String             @unique
+  displayName      String
+  weightsPath      String
+  quantization     String
+  contextLength    Int
+  nThreads         Int                @default(8)
+  gpuLayers        Int                @default(0)
+  status           ModelStatus        @default(INACTIVE)
+  pricePerMTokIn   Int
+  pricePerMTokOut  Int
+  expectedTokPerSec Float?
+  qualityClass     Int                @default(50)
+  latencyClass     Int                @default(50)
+  supportsTools    Boolean            @default(false)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  usageEvents      UsageEvent[]
+  pricingVersions  PricingVersion[]
+  revisions        ModelRevision[]
+  deployments      ModelDeployment[]
+  reservations     ResidencyReservation[]
+  canaries         CanaryChannel[]
+  inferenceReqs    InferenceRequest[] @relation("RequestedModel")
+  resolvedReqs     InferenceRequest[] @relation("ResolvedModel")
+}
+
+model PricingVersion {
   id              String      @id @default(cuid())
-  /// Public slug used in OpenAI-compatible API requests, e.g. "zms-coder-7b"
-  modelId         String      @unique
-  displayName     String
-  weightsPath     String
-  quantization    String
-  contextLength   Int
-  nThreads        Int         @default(8)
-  gpuLayers       Int         @default(0)
-  status          ModelStatus @default(INACTIVE)
+  model           HostedModel @relation(fields: [hostedModelId], references: [id], onDelete: Cascade)
+  hostedModelId   String
   pricePerMTokIn  Int
   pricePerMTokOut Int
-  expectedTokPerSec Float?
+  currency        String      @default("USD")
+  effectiveFrom   DateTime    @default(now())
+  effectiveTo     DateTime?
   createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-  usageEvents     UsageEvent[]
+  inferenceReqs   InferenceRequest[]
+
+  @@index([hostedModelId, effectiveFrom])
 }
 
 model UsageEvent {
@@ -121,10 +253,8 @@ model UsageEvent {
   customerId       String
   apiKey           ApiKey      @relation(fields: [apiKeyId], references: [id])
   apiKeyId         String
-  /// FK to HostedModel.id (cuid), not the public slug
   model            HostedModel @relation(fields: [modelId], references: [id])
   modelId          String
-  /// Denormalized public slug for analytics convenience
   modelSlug        String
   promptTokens     Int
   completionTokens Int
@@ -132,6 +262,9 @@ model UsageEvent {
   requestId        String?
   idempotencyKey   String?     @unique
   createdAt        DateTime    @default(now())
+  inferenceRequest InferenceRequest? @relation(fields: [inferenceRequestId], references: [id])
+  inferenceRequestId String?   @unique
+  receipt          UsageReceipt?
 
   @@index([customerId, createdAt])
   @@index([modelId, createdAt])
@@ -139,13 +272,29 @@ model UsageEvent {
 }
 
 model QuotaLedger {
-  id               String   @id @default(cuid())
-  customer         Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  customerId       String   @unique
-  periodStart      DateTime
-  periodEnd        DateTime
-  tokensUsed       BigInt   @default(0)
-  updatedAt        DateTime @updatedAt
+  id          String   @id @default(cuid())
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId  String   @unique
+  periodStart DateTime
+  periodEnd   DateTime
+  tokensUsed  BigInt   @default(0)
+  tokensReserved BigInt @default(0)
+  updatedAt   DateTime @updatedAt
+  entries     QuotaLedgerEntry[]
+}
+
+model QuotaLedgerEntry {
+  id            String      @id @default(cuid())
+  ledger        QuotaLedger @relation(fields: [ledgerId], references: [id], onDelete: Cascade)
+  ledgerId      String
+  idempotencyKey String     @unique
+  deltaTokens   BigInt
+  reservedDelta BigInt      @default(0)
+  reason        String
+  requestId     String?
+  createdAt     DateTime    @default(now())
+
+  @@index([ledgerId, createdAt])
 }
 
 model Invoice {
@@ -161,7 +310,610 @@ model Invoice {
   paymentRef      String?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
+  lines           InvoiceLine[]
+  credits         ServiceCredit[]
 
   @@index([customerId, periodStart])
   @@unique([customerId, periodStart, periodEnd])
+}
+
+model InvoiceLine {
+  id          String          @id @default(cuid())
+  invoice     Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId   String
+  type        InvoiceLineType
+  description String
+  amountCents Int
+  quantity    Int             @default(1)
+  metadata    Json?
+  createdAt   DateTime        @default(now())
+
+  @@index([invoiceId])
+}
+
+model InferenceRequest {
+  id                 String          @id @default(cuid())
+  customer           Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId         String
+  apiKey             ApiKey          @relation(fields: [apiKeyId], references: [id])
+  apiKeyId           String
+  status             InferenceStatus @default(QUEUED)
+  requestedModel     HostedModel?    @relation("RequestedModel", fields: [requestedModelId], references: [id])
+  requestedModelId   String?
+  requestedModelSlug String
+  resolvedModel      HostedModel?    @relation("ResolvedModel", fields: [resolvedModelId], references: [id])
+  resolvedModelId    String?
+  resolvedModelSlug  String?
+  pricingVersion     PricingVersion? @relation(fields: [pricingVersionId], references: [id])
+  pricingVersionId   String?
+  policyVersionId    String?
+  policyDecisionHash String?
+  promptTokens       Int             @default(0)
+  completionTokens   Int             @default(0)
+  costMicros         BigInt          @default(0)
+  queueMs            Int             @default(0)
+  coldStartMs        Int             @default(0)
+  ttftMs             Int?
+  generationMs       Int             @default(0)
+  latencyMs          Int             @default(0)
+  finishReason       String?
+  errorCode          String?
+  errorMessage       String?
+  stream             Boolean         @default(false)
+  nodeId             String?
+  hardwareProfileId  String?
+  receiptId          String?
+  createdAt          DateTime        @default(now())
+  startedAt          DateTime?
+  completedAt        DateTime?
+  attempts           InferenceAttempt[]
+  usageEvent         UsageEvent?
+  receipt            UsageReceipt?
+  budgetReservations BudgetReservation[]
+  retrievalRuns      RetrievalRun[]
+
+  @@index([customerId, createdAt])
+  @@index([status, createdAt])
+  @@index([resolvedModelSlug, createdAt])
+}
+
+model InferenceAttempt {
+  id                String           @id @default(cuid())
+  request           InferenceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId         String
+  attemptNo         Int
+  backend           String
+  nodeId            String?
+  modelSlug         String
+  status            InferenceStatus  @default(QUEUED)
+  promptTokens      Int              @default(0)
+  completionTokens  Int              @default(0)
+  costMicros        BigInt           @default(0)
+  queueMs           Int              @default(0)
+  coldStartMs       Int              @default(0)
+  ttftMs            Int?
+  generationMs      Int              @default(0)
+  cancelReason      String?
+  errorCode         String?
+  errorMessage      String?
+  hardwareProfileId String?
+  createdAt         DateTime         @default(now())
+  startedAt         DateTime?
+  firstTokenAt      DateTime?
+  completedAt       DateTime?
+
+  @@unique([requestId, attemptNo])
+  @@index([modelSlug, createdAt])
+}
+
+model UsageReceipt {
+  id               String            @id @default(cuid())
+  request          InferenceRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId        String?           @unique
+  usageEvent       UsageEvent?       @relation(fields: [usageEventId], references: [id], onDelete: Cascade)
+  usageEventId     String?           @unique
+  payloadCanonical String
+  payloadHash      String
+  signature        String
+  algorithm        String            @default("Ed25519")
+  signingKeyId     String
+  previousHash     String?
+  issuedAt         DateTime          @default(now())
+
+  @@index([issuedAt])
+  @@index([signingKeyId])
+}
+
+model SigningKey {
+  id          String    @id @default(cuid())
+  keyId       String    @unique
+  algorithm   String    @default("Ed25519")
+  publicKey   String
+  /// Local-dev only: encrypted or file-backed private material reference
+  privateRef  String?
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  rotatedAt   DateTime?
+  revokedAt   DateTime?
+}
+
+model AuditEvent {
+  id           String    @id @default(cuid())
+  actorType    String
+  actorId      String?
+  customer     Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerId   String?
+  action       String
+  resourceType String
+  resourceId   String?
+  requestId    String?
+  beforeHash   String?
+  afterHash    String?
+  metadata     Json?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime  @default(now())
+
+  @@index([customerId, createdAt])
+  @@index([resourceType, resourceId])
+  @@index([action, createdAt])
+}
+
+model Policy {
+  id        String          @id @default(cuid())
+  name      String
+  kind      PolicyKind
+  scope     PolicyScope     @default(PLATFORM)
+  enabled   Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  versions  PolicyVersion[]
+  bindings  PolicyBinding[]
+
+  @@unique([name, kind, scope])
+}
+
+model PolicyVersion {
+  id         String   @id @default(cuid())
+  policy     Policy   @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  policyId   String
+  version    Int
+  document   Json
+  checksum   String
+  createdBy  String?
+  createdAt  DateTime @default(now())
+
+  @@unique([policyId, version])
+}
+
+model PolicyBinding {
+  id         String   @id @default(cuid())
+  policy     Policy   @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  policyId   String
+  plan       Plan?    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planId     String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId String?
+  apiKey     ApiKey?  @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  apiKeyId   String?
+  priority   Int      @default(100)
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+  @@index([apiKeyId])
+  @@index([planId])
+}
+
+model BudgetAccount {
+  id           String              @id @default(cuid())
+  customer     Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId   String
+  apiKey       ApiKey?             @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  apiKeyId     String?
+  name         String
+  modelSlug    String?
+  periodStart  DateTime
+  periodEnd    DateTime
+  limitMicros  BigInt
+  spentMicros  BigInt              @default(0)
+  reservedMicros BigInt            @default(0)
+  softLimitPct Int                 @default(80)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  reservations BudgetReservation[]
+
+  @@index([customerId, periodStart])
+  @@unique([customerId, apiKeyId, modelSlug, periodStart])
+}
+
+model BudgetReservation {
+  id            String            @id @default(cuid())
+  budget        BudgetAccount     @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  budgetId      String
+  request       InferenceRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  requestId     String?
+  amountMicros  BigInt
+  status        String            @default("HELD")
+  idempotencyKey String           @unique
+  createdAt     DateTime          @default(now())
+  releasedAt    DateTime?
+}
+
+model RuntimeNode {
+  id            String            @id @default(cuid())
+  name          String            @unique
+  hostname      String
+  region        String            @default("local")
+  jurisdiction  String?
+  status        NodeStatus        @default(ONLINE)
+  totalRamMb    Int               @default(0)
+  freeRamMb     Int               @default(0)
+  cpuCores      Int               @default(0)
+  capabilities  Json?
+  trustState    String            @default("local")
+  lastHeartbeat DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  deployments   ModelDeployment[]
+  reservations  ResidencyReservation[]
+  profiles      HardwareProfile[]
+  commands      NodeCommand[]
+  heartbeats    NodeHeartbeat[]
+}
+
+model NodeHeartbeat {
+  id        String      @id @default(cuid())
+  node      RuntimeNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  nodeId    String
+  payload   Json
+  createdAt DateTime    @default(now())
+
+  @@index([nodeId, createdAt])
+}
+
+model ModelDeployment {
+  id            String           @id @default(cuid())
+  model         HostedModel      @relation(fields: [hostedModelId], references: [id], onDelete: Cascade)
+  hostedModelId String
+  node          RuntimeNode      @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  nodeId        String
+  status        DeploymentStatus @default(PENDING)
+  ramMb         Int              @default(0)
+  port          Int?
+  pid           Int?
+  revisionId    String?
+  profileId     String?
+  lastError     String?
+  warmedAt      DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@unique([hostedModelId, nodeId])
+  @@index([nodeId, status])
+}
+
+model ResidencyReservation {
+  id              String            @id @default(cuid())
+  customer        Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId      String
+  model           HostedModel       @relation(fields: [hostedModelId], references: [id], onDelete: Cascade)
+  hostedModelId   String
+  node            RuntimeNode?      @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  nodeId          String?
+  status          ReservationStatus @default(PENDING)
+  priority        Int               @default(100)
+  ramMb           Int
+  minWarmMinutes  Int               @default(30)
+  preemptible     Boolean           @default(false)
+  startsAt        DateTime          @default(now())
+  endsAt          DateTime
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([status, endsAt])
+  @@index([customerId, status])
+}
+
+model HardwareProfile {
+  id          String       @id @default(cuid())
+  node        RuntimeNode  @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  nodeId      String
+  name        String
+  nThreads    Int
+  contextLength Int
+  batchSize   Int          @default(512)
+  useMmap     Boolean      @default(true)
+  gpuLayers   Int          @default(0)
+  active      Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  trials      TuningTrial[]
+
+  @@unique([nodeId, name])
+}
+
+model TuningTrial {
+  id          String          @id @default(cuid())
+  profile     HardwareProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  profileId   String
+  modelSlug   String
+  tokPerSec   Float
+  ttftMs      Float
+  loadMs      Float
+  ramMb       Int
+  score       Float
+  promoted    Boolean         @default(false)
+  createdAt   DateTime        @default(now())
+
+  @@index([modelSlug, createdAt])
+}
+
+model SloDefinition {
+  id              String     @id @default(cuid())
+  name            String     @unique
+  description     String?
+  latencyP95Ms    Int
+  availabilityPct Float
+  windowMinutes   Int        @default(60)
+  creditMicros    BigInt     @default(0)
+  enabled         Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  windows         SloWindow[]
+  violations      SloViolation[]
+}
+
+model SloWindow {
+  id             String         @id @default(cuid())
+  definition     SloDefinition  @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  definitionId   String
+  customer       Customer?      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId     String?
+  windowStart    DateTime
+  windowEnd      DateTime
+  requestCount   Int            @default(0)
+  successCount   Int            @default(0)
+  breachCount    Int            @default(0)
+  p95LatencyMs   Int            @default(0)
+  availabilityPct Float         @default(100)
+  status         SloWindowStatus @default(HEALTHY)
+  createdAt      DateTime       @default(now())
+
+  @@unique([definitionId, customerId, windowStart])
+  @@index([windowStart])
+}
+
+model SloViolation {
+  id           String        @id @default(cuid())
+  definition   SloDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  definitionId String
+  requestId    String?
+  reason       String
+  latencyMs    Int?
+  createdAt    DateTime      @default(now())
+
+  @@index([definitionId, createdAt])
+}
+
+model ServiceCredit {
+  id           String   @id @default(cuid())
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId   String
+  invoice      Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceId    String?
+  amountMicros BigInt
+  reason       String
+  applied      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([customerId, createdAt])
+}
+
+model ModelRevision {
+  id            String      @id @default(cuid())
+  model         HostedModel @relation(fields: [hostedModelId], references: [id], onDelete: Cascade)
+  hostedModelId String
+  revision      String
+  weightsHash   String?
+  changelog     String?
+  createdAt     DateTime    @default(now())
+  evalRuns      EvalRun[]
+  canaries      CanaryChannel[]
+
+  @@unique([hostedModelId, revision])
+}
+
+model EvalSuite {
+  id          String     @id @default(cuid())
+  name        String     @unique
+  description String?
+  createdAt   DateTime   @default(now())
+  cases       EvalCase[]
+  runs        EvalRun[]
+}
+
+model EvalCase {
+  id        String    @id @default(cuid())
+  suite     EvalSuite @relation(fields: [suiteId], references: [id], onDelete: Cascade)
+  suiteId   String
+  name      String
+  prompt    String
+  expected  String?
+  metadata  Json?
+  createdAt DateTime  @default(now())
+
+  @@index([suiteId])
+}
+
+model EvalRun {
+  id           String        @id @default(cuid())
+  suite        EvalSuite     @relation(fields: [suiteId], references: [id], onDelete: Cascade)
+  suiteId      String
+  revision     ModelRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  revisionId   String
+  status       EvalRunStatus @default(PENDING)
+  score        Float?
+  summary      Json?
+  createdAt    DateTime      @default(now())
+  completedAt  DateTime?
+  results      EvalResult[]
+}
+
+model EvalResult {
+  id        String  @id @default(cuid())
+  run       EvalRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId     String
+  caseName  String
+  passed    Boolean
+  score     Float?
+  output    String?
+  latencyMs Int?
+  createdAt DateTime @default(now())
+
+  @@index([runId])
+}
+
+model CanaryChannel {
+  id              String         @id @default(cuid())
+  name            String         @unique
+  model           HostedModel    @relation(fields: [hostedModelId], references: [id], onDelete: Cascade)
+  hostedModelId   String
+  stableRevision  ModelRevision? @relation(fields: [stableRevisionId], references: [id])
+  stableRevisionId String?
+  trafficPct      Int            @default(5)
+  enabled         Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+model KnowledgeBase {
+  id           String               @id @default(cuid())
+  customer     Customer             @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId   String
+  name         String
+  description  String?
+  sensitivity  KnowledgeSensitivity @default(INTERNAL)
+  retentionDays Int                 @default(90)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  documents    KnowledgeDocument[]
+
+  @@unique([customerId, name])
+}
+
+model KnowledgeDocument {
+  id             String            @id @default(cuid())
+  knowledgeBase  KnowledgeBase     @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  knowledgeBaseId String
+  title          String
+  sourceUri      String?
+  contentType    String            @default("text/plain")
+  status         IngestionStatus   @default(PENDING)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  versions       DocumentVersion[]
+}
+
+model DocumentVersion {
+  id         String            @id @default(cuid())
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentId String
+  version    Int
+  checksum   String
+  storageKey String
+  byteSize   Int
+  createdAt  DateTime          @default(now())
+  chunks     KnowledgeChunk[]
+
+  @@unique([documentId, version])
+}
+
+model KnowledgeChunk {
+  id        String          @id @default(cuid())
+  version   DocumentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  versionId String
+  ordinal   Int
+  content   String
+  tokenCount Int            @default(0)
+  embedding Json?
+  createdAt DateTime        @default(now())
+
+  @@unique([versionId, ordinal])
+}
+
+model RetrievalRun {
+  id        String            @id @default(cuid())
+  request   InferenceRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  requestId String?
+  queryHash String
+  topK      Int
+  hits      Json
+  costMicros BigInt           @default(0)
+  createdAt DateTime          @default(now())
+
+  @@index([requestId])
+}
+
+model MemoryNamespace {
+  id         String        @id @default(cuid())
+  customer   Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId String
+  name       String
+  retentionDays Int        @default(30)
+  createdAt  DateTime      @default(now())
+  entries    MemoryEntry[]
+
+  @@unique([customerId, name])
+}
+
+model MemoryEntry {
+  id          String          @id @default(cuid())
+  namespace   MemoryNamespace @relation(fields: [namespaceId], references: [id], onDelete: Cascade)
+  namespaceId String
+  key         String
+  value       String
+  expiresAt   DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@unique([namespaceId, key])
+}
+
+model NodeCommand {
+  id         String      @id @default(cuid())
+  node       RuntimeNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  nodeId     String
+  command    String
+  payload    Json?
+  status     String      @default("PENDING")
+  result     Json?
+  nonce      String      @unique
+  createdAt  DateTime    @default(now())
+  completedAt DateTime?
+
+  @@index([nodeId, createdAt])
+}
+
+model FederationOffer {
+  id          String   @id @default(cuid())
+  nodeName    String
+  modelSlug   String
+  capacity    Int
+  priceMicros BigInt
+  region      String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([modelSlug, expiresAt])
+}
+
+model FederationSettlement {
+  id           String   @id @default(cuid())
+  offerId      String?
+  requestId    String
+  nodeName     String
+  amountMicros BigInt
+  receiptHash  String
+  createdAt    DateTime @default(now())
+
+  @@unique([requestId, nodeName])
 }

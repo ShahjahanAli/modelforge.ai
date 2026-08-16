@@ -11,6 +11,7 @@
     "registry:status": "tsx src/scripts/registry-status.ts",
     "worker": "tsx src/workers/usage-worker.ts",
     "invoice-worker": "tsx src/workers/invoice-worker.ts",
+    "modern-worker": "tsx src/workers/modern-worker.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "eslint src"
@@ -21,6 +22,7 @@
     "@modelforge/billing": "workspace:*",
     "@modelforge/db": "workspace:*",
     "@modelforge/engine": "workspace:*",
+    "@modelforge/platform": "workspace:*",
     "bullmq": "^5.53.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",

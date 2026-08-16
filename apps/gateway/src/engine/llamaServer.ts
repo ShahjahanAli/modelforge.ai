@@ -32,6 +32,44 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>();
+const modelLoadLocks = new Map<
+  string,
+  Promise<{ success: boolean; message: string; ram_used_mb: number }>
+>();
+
+export function isModelProtectedFromEviction(modelId: string): boolean {
+  const protectedModels = (process.env.MODELFORGE_PROTECTED_MODELS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return protectedModels.includes(modelId);
+}
+
+interface CpuSnapshot {
+  idle: number;
+  total: number;
+}
+
+function cpuSnapshot(): CpuSnapshot {
+  return os.cpus().reduce(
+    (sum, cpu) => {
+      const total = Object.values(cpu.times).reduce((value, time) => value + time, 0);
+      return { idle: sum.idle + cpu.times.idle, total: sum.total + total };
+    },
+    { idle: 0, total: 0 },
+  );
+}
+
+let previousCpuSnapshot = cpuSnapshot();
+
+function cpuUsagePercent(): number {
+  const current = cpuSnapshot();
+  const idleDelta = current.idle - previousCpuSnapshot.idle;
+  const totalDelta = current.total - previousCpuSnapshot.total;
+  previousCpuSnapshot = current;
+  if (totalDelta <= 0) return 0;
+  return Number((Math.max(0, 1 - idleDelta / totalDelta) * 100).toFixed(1));
+}
 
 export class EngineError extends Error {
   constructor(
@@ -106,8 +144,30 @@ async function evictForBudget(needMb: number): Promise<void> {
   const budget = ramBudgetMb();
   if (usedRamMb() + needMb <= budget) return;
 
+  let reservedSlugs = new Set<string>();
+  try {
+    const { prisma } = await import("@modelforge/db");
+    const active = await prisma.residencyReservation.findMany({
+      where: {
+        status: "ACTIVE",
+        startsAt: { lte: new Date() },
+        endsAt: { gt: new Date() },
+        preemptible: false,
+      },
+      include: { model: true },
+    });
+    reservedSlugs = new Set(active.map((row) => row.model.modelId));
+  } catch {
+    // DB may be unavailable during early boot; fall back to env protections only.
+  }
+
   const candidates = [...instances.values()]
-    .filter((instance) => instance.activeRequests === 0)
+    .filter(
+      (instance) =>
+        instance.activeRequests === 0 &&
+        !isModelProtectedFromEviction(instance.modelId) &&
+        !reservedSlugs.has(instance.modelId),
+    )
     .sort((a, b) => a.lastUsedAt - b.lastUsedAt);
 
   for (const candidate of candidates) {
@@ -123,7 +183,7 @@ async function evictForBudget(needMb: number): Promise<void> {
   }
 }
 
-export async function loadModel(req: {
+async function loadModelUnlocked(req: {
   model_id: string;
   weights_path: string;
   context_length: number;
@@ -170,6 +230,13 @@ export async function loadModel(req: {
     String(req.n_threads),
     "--parallel",
     String(process.env.MAX_CONCURRENT_PER_MODEL ?? 2),
+    // Thinking is off by default so the completion budget is spent on the
+    // answer, and any thoughts that do leak stay in `content` instead of being
+    // split into a field OpenAI clients ignore.
+    "--reasoning",
+    process.env.LLAMA_REASONING ?? "off",
+    "--reasoning-format",
+    process.env.LLAMA_REASONING_FORMAT ?? "none",
     "--no-webui",
   ];
   if (req.use_mmap === false) args.push("--no-mmap");
@@ -213,6 +280,24 @@ export async function loadModel(req: {
   return { success: true, message: `listening on 127.0.0.1:${port}`, ram_used_mb: ramMb };
 }
 
+export function loadModel(req: {
+  model_id: string;
+  weights_path: string;
+  context_length: number;
+  n_threads: number;
+  quantization: string;
+  use_mmap: boolean;
+}): Promise<{ success: boolean; message: string; ram_used_mb: number }> {
+  const existingLock = modelLoadLocks.get(req.model_id);
+  if (existingLock) return existingLock;
+
+  const loading = loadModelUnlocked(req).finally(() => {
+    if (modelLoadLocks.get(req.model_id) === loading) modelLoadLocks.delete(req.model_id);
+  });
+  modelLoadLocks.set(req.model_id, loading);
+  return loading;
+}
+
 export async function unloadModel(model_id: string): Promise<{ success: boolean; message: string }> {
   const instance = instances.get(model_id);
   if (!instance) return { success: true, message: "not loaded" };
@@ -252,12 +337,33 @@ export async function healthCheck(): Promise<HealthStatus> {
       `llama-server binary missing at ${binary}. Run: pnpm llama:fetch`,
     );
   }
+  const cpus = os.cpus();
+  const totalHostRam = os.totalmem();
+  const freeHostRam = os.freemem();
+  const averageSpeed =
+    cpus.length > 0 ? Math.round(cpus.reduce((sum, cpu) => sum + cpu.speed, 0) / cpus.length) : 0;
+
   return {
     healthy: true,
     total_ram_mb: ramBudgetMb(),
     used_ram_mb: usedRamMb(),
     loaded_model_count: instances.size,
-    physical_core_count: os.cpus().length,
+    // Node exposes logical processors portably; retained for gRPC compatibility.
+    physical_core_count: cpus.length,
+    logical_core_count: cpus.length,
+    cpu_model: cpus[0]?.model.trim() ?? "Unknown CPU",
+    cpu_speed_mhz: averageSpeed,
+    cpu_usage_percent: cpuUsagePercent(),
+    host_total_ram_mb: Math.round(totalHostRam / 1024 ** 2),
+    host_free_ram_mb: Math.round(freeHostRam / 1024 ** 2),
+    host_uptime_seconds: Math.round(os.uptime()),
+    gateway_rss_mb: Math.round(process.memoryUsage().rss / 1024 ** 2),
+    load_average_1m: Number((os.loadavg()[0] ?? 0).toFixed(2)),
+    hostname: os.hostname(),
+    platform: os.type(),
+    platform_release: os.release(),
+    arch: os.arch(),
+    node_version: process.version,
   };
 }
 
@@ -293,15 +399,30 @@ async function ensureLoaded(modelId: string): Promise<Instance> {
   return loaded;
 }
 
+interface UpstreamPart {
+  content?: string | null;
+  reasoning_content?: string | null;
+}
+
 interface UpstreamChoice {
-  delta?: { content?: string | null };
-  message?: { content?: string | null };
+  delta?: UpstreamPart;
+  message?: UpstreamPart;
   finish_reason?: string | null;
 }
 
 interface UpstreamResponse {
   choices?: UpstreamChoice[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+/**
+ * Reasoning models spend their token budget inside a thought block that
+ * llama.cpp reports separately as `reasoning_content`. If generation is cut off
+ * before the block closes, `content` is empty even though tokens were billed,
+ * so fall back to the reasoning text rather than returning nothing.
+ */
+function partText(part: UpstreamPart | undefined): string {
+  return part?.content?.length ? part.content : (part?.reasoning_content ?? "");
 }
 
 export function generateStream(
@@ -362,7 +483,7 @@ export function generateStream(
           instance.generatedTokens += completionTokens;
           instance.generationMs += Date.now() - startedAt;
           yield {
-            delta: body.choices?.[0]?.message?.content ?? "",
+            delta: partText(body.choices?.[0]?.message),
             is_final: true,
             prompt_tokens: promptTokens,
             completion_tokens: completionTokens,
@@ -402,7 +523,7 @@ export function generateStream(
             const choice = parsed.choices?.[0];
             if (choice?.finish_reason) finishReason = choice.finish_reason;
 
-            const delta = choice?.delta?.content;
+            const delta = partText(choice?.delta);
             if (delta) {
               yield {
                 delta,

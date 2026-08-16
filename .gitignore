@@ -25,6 +25,8 @@ credentials.json
 *.ggml
 data/models/*
 !data/models/.gitkeep
+# Local Ed25519 signing material for usage receipts
+data/signing/
 # Prebuilt llama.cpp binaries from `pnpm llama:fetch`
 vendor/
 

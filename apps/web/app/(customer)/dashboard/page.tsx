@@ -4,6 +4,7 @@ import { prisma } from "@modelforge/db";
 import { Activity, Coins, Gauge, Hash, Layers, Timer } from "lucide-react";
 import { authOptions } from "@/lib/auth";
 import { UsageChart, type UsagePoint } from "@/components/UsageChart";
+import { RecentRequestsTable } from "@/components/RecentRequestsTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import { Badge } from "@/components/ui/Badge";
@@ -21,6 +22,7 @@ function percentile(sorted: number[], p: number): number {
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/login");
+  if (session.user.role === "ADMIN") redirect("/admin/dashboard");
   const customerId = (session.user as { id: string }).id;
 
   // Server-side reporting window intentionally uses the request time.
@@ -96,7 +98,6 @@ export default async function DashboardPage() {
   const quotaUsed = ledger ? Number(ledger.tokensUsed) : 0;
   const quotaLimit = sub ? Number(sub.plan.monthlyTokenQuota) : 0;
   const unlimited = quotaLimit === 0;
-
   return (
     <>
       <PageHeader
@@ -301,49 +302,25 @@ export default async function DashboardPage() {
       <Panel>
         <PanelHeader
           title="Recent requests"
-          description="Latest 10 metered inference calls"
+          description={`Filter the latest ${Math.min(events.length, 1_000).toLocaleString()} metered calls by local date and token size`}
           actions={<Gauge className="size-4 text-content-muted" aria-hidden />}
         />
         {events.length === 0 ? (
           <EmptyState icon={Gauge} title="No requests yet" />
         ) : (
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Timestamp (UTC)</th>
-                  <th>Model</th>
-                  <th className="text-right">In</th>
-                  <th className="text-right">Out</th>
-                  <th className="text-right">Latency</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...events]
-                  .reverse()
-                  .slice(0, 10)
-                  .map((event) => (
-                    <tr key={event.id}>
-                      <td className="whitespace-nowrap font-mono text-xs">
-                        {event.createdAt.toISOString().replace("T", " ").slice(0, 19)}
-                      </td>
-                      <td>
-                        <span className="mono-chip">{event.modelSlug}</span>
-                      </td>
-                      <td className="whitespace-nowrap text-right font-mono tabular-nums">
-                        {event.promptTokens.toLocaleString()}
-                      </td>
-                      <td className="whitespace-nowrap text-right font-mono tabular-nums">
-                        {event.completionTokens.toLocaleString()}
-                      </td>
-                      <td className="whitespace-nowrap text-right font-mono tabular-nums">
-                        {event.latencyMs.toLocaleString()} ms
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
+          <RecentRequestsTable
+            rows={[...events]
+              .reverse()
+              .slice(0, 1_000)
+              .map((event) => ({
+                id: event.id,
+                createdAt: event.createdAt.toISOString(),
+                model: event.modelSlug,
+                promptTokens: event.promptTokens,
+                completionTokens: event.completionTokens,
+                latencyMs: event.latencyMs,
+              }))}
+          />
         )}
       </Panel>
     </>

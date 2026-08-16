@@ -158,6 +158,12 @@ body {
     text-content-secondary transition-colors hover:bg-surface-2 hover:text-content-primary;
 }
 
+@utility icon-btn {
+  @apply grid size-8 shrink-0 place-items-center rounded-lg text-content-muted transition-colors
+    hover:bg-surface-2 hover:text-content-primary focus-visible:outline-none focus-visible:ring-2
+    focus-visible:ring-brand-500/40 disabled:cursor-not-allowed disabled:opacity-40;
+}
+
 @utility input {
   @apply w-full rounded-lg border border-line-strong bg-surface-1 px-3 py-2 text-sm
     text-content-primary shadow-[0_1px_2px_rgba(16,24,40,0.04)]

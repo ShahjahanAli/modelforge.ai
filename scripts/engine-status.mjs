@@ -43,7 +43,19 @@ if (health.ok) {
   console.log(`healthy        : ${h.healthy}`);
   console.log(`RAM budget     : ${h.used_ram_mb} / ${h.total_ram_mb} MB used`);
   console.log(`resident models: ${h.loaded_model_count}`);
-  console.log(`physical cores : ${h.physical_core_count}`);
+  console.log(`logical CPUs   : ${h.logical_core_count ?? h.physical_core_count}`);
+  if (h.cpu_model) console.log(`CPU            : ${h.cpu_model}`);
+  if (h.cpu_usage_percent !== undefined)
+    console.log(`CPU utilization: ${h.cpu_usage_percent}%`);
+  if (h.host_total_ram_mb !== undefined)
+    console.log(
+      `host memory    : ${(h.host_total_ram_mb - (h.host_free_ram_mb ?? 0)).toLocaleString()} / ${h.host_total_ram_mb.toLocaleString()} MB`,
+    );
+  if (h.gateway_rss_mb !== undefined) console.log(`gateway RSS    : ${h.gateway_rss_mb} MB`);
+  if (h.host_uptime_seconds !== undefined)
+    console.log(`host uptime    : ${Math.floor(h.host_uptime_seconds / 3600)}h`);
+  if (h.platform)
+    console.log(`host platform  : ${h.platform} ${h.platform_release} (${h.arch})`);
 } else {
   console.log(`HTTP ${health.status}`);
   console.log(health.body);

@@ -16,7 +16,7 @@ describe("chatCompletionRequestSchema", () => {
       stop: "END",
     });
     expect(parsed.stop).toEqual(["END"]);
-    expect(parsed.max_tokens).toBe(512);
+    expect(parsed.max_tokens).toBe(4096);
   });
 
   it("rejects empty messages", () => {

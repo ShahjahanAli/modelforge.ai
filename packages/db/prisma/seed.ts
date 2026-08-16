@@ -168,6 +168,109 @@ async function main() {
   if (!existingKey) {
     console.log(`Demo API key (store now, shown once): ${rawKey}`);
   }
+
+  // Modern platform defaults
+  for (const model of await prisma.hostedModel.findMany()) {
+    await prisma.pricingVersion.create({
+      data: {
+        hostedModelId: model.id,
+        pricePerMTokIn: model.pricePerMTokIn,
+        pricePerMTokOut: model.pricePerMTokOut,
+      },
+    }).catch(() => undefined);
+    await prisma.modelRevision.upsert({
+      where: { hostedModelId_revision: { hostedModelId: model.id, revision: "v1" } },
+      update: {},
+      create: { hostedModelId: model.id, revision: "v1", changelog: "Seed revision" },
+    });
+  }
+
+  for (const plan of [free, pro, enterprise]) {
+    for (const modelSlug of plan.allowedModelIds) {
+      await prisma.planModelEntitlement.upsert({
+        where: { planId_modelSlug: { planId: plan.id, modelSlug } },
+        update: {},
+        create: { planId: plan.id, modelSlug },
+      });
+    }
+  }
+
+  const routingPolicy = await prisma.policy.upsert({
+    where: { name_kind_scope: { name: "default-routing", kind: "ROUTING", scope: "PLATFORM" } },
+    update: { enabled: true },
+    create: {
+      name: "default-routing",
+      kind: "ROUTING",
+      scope: "PLATFORM",
+      enabled: true,
+    },
+  });
+  const existingVersion = await prisma.policyVersion.findFirst({
+    where: { policyId: routingPolicy.id },
+    orderBy: { version: "desc" },
+  });
+  if (!existingVersion) {
+    await prisma.policyVersion.create({
+      data: {
+        policyId: routingPolicy.id,
+        version: 1,
+        document: {
+          preferredModels: ["zms-coder-7b"],
+          fallbackModels: ["zms-chat-13b"],
+          minQuality: 40,
+        },
+        checksum: "seed",
+        createdBy: "seed",
+      },
+    });
+  }
+
+  await prisma.sloDefinition.upsert({
+    where: { name: "default-chat" },
+    update: {},
+    create: {
+      name: "default-chat",
+      description: "Default chat completion latency/availability target",
+      latencyP95Ms: 120_000,
+      availabilityPct: 99.0,
+      windowMinutes: 60,
+      creditMicros: 100_000n,
+    },
+  });
+
+  await prisma.runtimeNode.upsert({
+    where: { name: "local-primary" },
+    update: { status: "ONLINE", lastHeartbeat: new Date() },
+    create: {
+      name: "local-primary",
+      hostname: "localhost",
+      region: "local",
+      status: "ONLINE",
+      totalRamMb: 16384,
+      freeRamMb: 8192,
+      cpuCores: 8,
+      trustState: "local",
+      lastHeartbeat: new Date(),
+    },
+  });
+
+  await prisma.evalSuite.upsert({
+    where: { name: "smoke" },
+    update: {},
+    create: {
+      name: "smoke",
+      description: "Basic response non-empty check",
+      cases: {
+        create: [
+          {
+            name: "hello",
+            prompt: "Say hello in one short sentence.",
+            expected: "hello",
+          },
+        ],
+      },
+    },
+  });
 }
 
 main()

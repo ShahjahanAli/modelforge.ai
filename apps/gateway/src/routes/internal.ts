@@ -251,8 +251,12 @@ internalRouter.post("/invoices/generate", async (req, res) => {
 internalRouter.post("/invoices/:id/checkout", async (req, res) => {
   const id = req.params.id!;
   const provider = (req.body?.provider as "stripe" | "bkash" | "nagad" | "mock") ?? "mock";
+  const customerId = typeof req.body?.customerId === "string" ? req.body.customerId : null;
   const invoice = await prisma.invoice.findUnique({ where: { id } });
   if (!invoice) return res.status(404).json({ error: { message: "invoice not found" } });
+  if (customerId && invoice.customerId !== customerId) {
+    return res.status(403).json({ error: { message: "invoice ownership mismatch" } });
+  }
   const adapter = createPaymentAdapter(provider);
   const checkout = await adapter.createCheckout({
     customerId: invoice.customerId,

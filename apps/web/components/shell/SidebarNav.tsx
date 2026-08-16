@@ -5,12 +5,23 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   Boxes,
+  BookOpen,
   CreditCard,
   Cpu,
+  FlaskConical,
+  Gauge,
+  LayoutDashboard,
   KeyRound,
   LineChart,
-  Users,
+  MessageSquare,
+  Network,
+  Receipt,
+  ScrollText,
+  Shield,
   Server,
+  Timer,
+  Users,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 
@@ -26,7 +37,9 @@ export interface NavGroup {
 }
 
 const iconMap: Record<string, LucideIcon> = {
+  overview: LayoutDashboard,
   activity: Activity,
+  chat: MessageSquare,
   key: KeyRound,
   boxes: Boxes,
   card: CreditCard,
@@ -34,6 +47,15 @@ const iconMap: Record<string, LucideIcon> = {
   cpu: Cpu,
   users: Users,
   chart: LineChart,
+  shield: Shield,
+  wallet: Wallet,
+  receipt: Receipt,
+  timer: Timer,
+  book: BookOpen,
+  network: Network,
+  scroll: ScrollText,
+  flask: FlaskConical,
+  gauge: Gauge,
 };
 
 export function SidebarNav({

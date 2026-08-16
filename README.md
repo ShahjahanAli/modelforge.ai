@@ -17,17 +17,32 @@ do not need a C++ compiler or CUDA toolchain.
 ## Highlights
 
 - **OpenAI-compatible API** — streaming and non-streaming
-  `/v1/chat/completions`
+  `/v1/chat/completions`, plus tools/response_format metadata and `model: "auto"`
+- **Immutable execution ledger** — every request gets an `InferenceRequest` with
+  attempts, timings, request-time pricing, and idempotent quota commits
+- **Signed usage receipts** — Ed25519 receipts with public-key verification and
+  export (`/usage/receipts`, `/verify-receipt`)
+- **Budget-aware routing & policies** — versioned routing/budget/data/tool
+  policies with PII redaction and atomic spend ceilings
+- **Residency reservations** — warm-model leases that protect capacity from LRU
+  eviction, plus local node heartbeats and deployments
+- **SLO enforcement & credits** — latency/availability windows with automatic
+  service-credit ledger entries
+- **Evaluations & canaries** — revision-gated eval suites and traffic-split
+  channels
+- **Knowledge & memory** — tenant knowledge bases, chunk embeddings, retrieval
+  cost attribution, and retention controls
+- **Local federation simulation** — loopback node transport with production mTLS
+  adapter boundaries
 - **LM Studio-style local serving** — discover GGUF files, register them, and
   load them on demand
 - **Process-isolated inference** — each loaded model runs in a loopback-only
   `llama-server` process
-- **RAM-aware model pool** — configurable budget with least-recently-used
-  eviction of idle models
+- **RAM-aware model pool** — configurable budget with reservation-aware eviction
 - **Multi-tenant access** — plans, API keys, quotas, rate limits, and model
   entitlements
-- **Operations console** — model registry, infrastructure status, customers,
-  and revenue views
+- **Operations console** — dashboards for requests, receipts, policies, nodes,
+  SLOs, evaluations, and audit events
 - **Usage and billing pipeline** — token metering, BullMQ workers, invoices,
   and pluggable payment adapters
 - **CPU-first defaults** — mmap, physical-core thread sizing, and conservative
@@ -426,6 +441,32 @@ pnpm --filter @modelforge/gateway test
 - Back up PostgreSQL and treat model files as separately managed artifacts.
 - Review the example service definitions in `infra/systemd/` before deployment.
 
+## Modern platform features
+
+Local-first vertical slices are enabled by default after
+`pnpm db:deploy && pnpm db:seed`:
+
+| Capability | Where to look |
+|---|---|
+| Immutable executions + cost debugger | `/requests`, `GET /v1/requests/:id` |
+| Signed usage receipts | `/usage/receipts`, `/verify-receipt`, `/.well-known/modelforge-usage-keys.json` |
+| Policies, budgets, auto-routing | `/policies`, `/budgets`, `model: "auto"` |
+| Residency reservations + nodes | `/reservations`, `/admin/nodes` |
+| SLO windows + service credits | `/reliability`, `/admin/slo` |
+| Evaluations + canaries | `/admin/evaluations` |
+| Knowledge ingest | `/knowledge` |
+| Audit trail | `/admin/audit` |
+
+Optional Redis workers for SLO rollups and evaluations:
+
+```bash
+pnpm --filter @modelforge/gateway modern-worker
+```
+
+Signing keys live under `MODELFORGE_SIGNING_DIR` (default `./data/signing`) and
+are gitignored. Production deployments should swap the local file signer for a
+KMS/HSM provider behind the same `SigningProvider` interface.
+
 ## Security model
 
 ```mermaid
@@ -465,10 +506,11 @@ or customer data in a public issue.
 
 ## Project status
 
-ModelForge is an early public release. Local GGUF serving, streaming,
-multi-tenant authorization, metering, model operations, and dashboards are
-functional. Payment integrations default to mock mode and should be validated
-against provider sandboxes before production use.
+ModelForge is an early public release with a working local-first modern control
+plane: immutable executions, signed receipts, policy routing, residency
+reservations, SLO credits, evaluations, knowledge ingest, and federation
+adapter boundaries. Payment integrations default to mock mode and should be
+validated against provider sandboxes before production use.
 
 Issues and focused pull requests are welcome.
 
