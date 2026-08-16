@@ -3,10 +3,10 @@ import { gatewayFetch } from "@/lib/gateway";
 import { prisma } from "@modelforge/db";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Panel, PanelHeader } from "@/components/ui/Panel";
-import { Badge, StatusBadge } from "@/components/ui/Badge";
+import { Badge } from "@/components/ui/Badge";
 import { StatCard, Meter } from "@/components/ui/StatCard";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { loadModelAction, unloadModelAction } from "./actions";
+import { ModelPoolControls, type CatalogModel } from "@/components/admin/ModelPoolControls";
 
 interface EngineHealth {
   healthy?: boolean;
@@ -27,6 +27,10 @@ interface EngineModels {
   }>;
 }
 
+interface AvailableWeights {
+  files?: Array<{ relativePath: string; sizeBytes: number }>;
+}
+
 export default async function AdminInfraPage() {
   const health: EngineHealth = await gatewayFetch("/internal/engine/health").catch(
     (error: unknown) => ({
@@ -37,12 +41,26 @@ export default async function AdminInfraPage() {
   const loaded: EngineModels = await gatewayFetch("/internal/engine/models").catch(() => ({
     models: [],
   }));
+  // Weight file sizes let the client pace its load progress bar per model.
+  const available: AvailableWeights = await gatewayFetch(
+    "/internal/engine/models/available",
+  ).catch(() => ({ files: [] }));
 
   const catalog = await prisma.hostedModel.findMany({ orderBy: { modelId: "asc" } });
   const residentModels = loaded.models ?? [];
-  const residentIds = new Set(residentModels.map((m) => m.model_id));
   const usedRam = health.used_ram_mb ?? 0;
   const totalRam = health.total_ram_mb ?? 0;
+
+  const sizeByPath = new Map((available.files ?? []).map((file) => [file.relativePath, file.sizeBytes]));
+  const catalogModels: CatalogModel[] = catalog.map((model) => ({
+    modelId: model.modelId,
+    displayName: model.displayName,
+    nThreads: model.nThreads,
+    contextLength: model.contextLength,
+    status: model.status,
+    quantization: model.quantization,
+    sizeBytes: sizeByPath.get(model.weightsPath) ?? null,
+  }));
 
   return (
     <>
@@ -161,60 +179,14 @@ export default async function AdminInfraPage() {
             description="Register a GGUF model in the model registry first."
           />
         ) : (
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Model</th>
-                  <th className="text-right">Threads</th>
-                  <th>Registry status</th>
-                  <th>Pool</th>
-                  <th className="text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {catalog.map((model) => (
-                  <tr key={model.id}>
-                    <td>
-                      <div className="font-medium text-content-primary">{model.displayName}</div>
-                      <div className="mt-1">
-                        <span className="mono-chip">{model.modelId}</span>
-                      </div>
-                    </td>
-                    <td className="text-right font-mono tabular-nums">{model.nThreads}</td>
-                    <td>
-                      <StatusBadge status={model.status} />
-                    </td>
-                    <td>
-                      <Badge
-                        tone={residentIds.has(model.modelId) ? "ok" : "neutral"}
-                        dot
-                        pulse={residentIds.has(model.modelId)}
-                      >
-                        {residentIds.has(model.modelId) ? "resident" : "cold"}
-                      </Badge>
-                    </td>
-                    <td>
-                      <div className="flex items-center justify-end gap-2">
-                        <form action={loadModelAction}>
-                          <input type="hidden" name="modelId" value={model.modelId} />
-                          <button className="btn text-xs" type="submit">
-                            Load
-                          </button>
-                        </form>
-                        <form action={unloadModelAction}>
-                          <input type="hidden" name="modelId" value={model.modelId} />
-                          <button className="btn-secondary text-xs" type="submit">
-                            Unload
-                          </button>
-                        </form>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ModelPoolControls
+            models={catalogModels}
+            initialResident={residentModels.map((model) => ({
+              modelId: model.model_id,
+              ramUsedMb: model.ram_used_mb,
+              activeRequests: model.active_requests,
+            }))}
+          />
         )}
       </Panel>
     </>

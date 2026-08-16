@@ -21,6 +21,7 @@ import { commitQuota, QuotaExceededError, releaseQuota, reserveQuota } from "../
 import { resolveModelForRequest } from "../lib/policyRouter.js";
 import { computeCostMicros, getActivePricingVersion } from "../lib/pricing.js";
 import { enqueueUsage } from "../lib/queues.js";
+import { claimCoreTrace, type CoreTraceRecorder } from "../lib/coreTrace.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { rateLimitMiddleware } from "../middleware/quota.js";
 import { bumpQuotaCache, quotaMiddleware } from "../middleware/quotaCheck.js";
@@ -127,6 +128,7 @@ v1Router.post(
     let reservedTokens = 0;
     let headersStarted = false;
     let resolvedSlug = body.model;
+    let coreTrace: CoreTraceRecorder | null = null;
 
     try {
       const requestedHosted =
@@ -142,6 +144,23 @@ v1Router.post(
       });
       executionId = execution.id;
       res.setHeader("x-request-id", execution.id);
+      coreTrace = await claimCoreTrace({
+        customerId: req.auth!.customerId,
+        requestId: execution.id,
+        startedAtMs: started,
+        explicitTraceId: body.metadata?.modelforge?.trace_session_id,
+        requestSnapshot: {
+          requestedModel: body.model,
+          stream: body.stream,
+          messageCount: messages.length,
+          roles: messages.map((message) => message.role),
+          promptCharacters: messages.reduce((sum, message) => sum + message.content.length, 0),
+          estimatedPromptTokens: estimatedTokens - body.max_tokens,
+          maxOutputTokens: body.max_tokens,
+          sampling: { temperature: body.temperature, topP: body.top_p },
+          contentCaptured: false,
+        },
+      });
 
       if (req.auth!.billingMode !== "USAGE" && req.auth!.monthlyTokenQuota > 0n) {
         await reserveQuota({
@@ -155,6 +174,15 @@ v1Router.post(
         });
         reservedTokens = estimatedTokens;
       }
+      await coreTrace?.event({
+        phase: "admission",
+        kind: "quota.reserved",
+        payload: {
+          estimatedTotalTokens: estimatedTokens,
+          reservedTokens,
+          billingMode: req.auth!.billingMode,
+        },
+      });
 
       const routed = await resolveModelForRequest({
         auth: {
@@ -169,12 +197,41 @@ v1Router.post(
         applyPii: process.env.MODELFORGE_PII_REDACT !== "false",
       });
       resolvedSlug = routed.resolvedModelSlug;
+      await coreTrace?.event({
+        phase: "routing",
+        kind: "model.resolved",
+        payload: {
+          requestedModel: body.model,
+          resolvedModel: routed.resolvedModelSlug,
+          policyVersionId: routed.policyVersionId ?? null,
+          decisionHash: routed.decisionHash ?? null,
+          piiRedactionApplied: Boolean(routed.redactedMessages),
+          model: {
+            quantization: routed.hosted.quantization,
+            contextLength: routed.hosted.contextLength,
+            threads: routed.hosted.nThreads,
+            gpuLayers: routed.hosted.gpuLayers,
+            qualityClass: routed.hosted.qualityClass,
+            latencyClass: routed.hosted.latencyClass,
+            supportsTools: routed.hosted.supportsTools,
+          },
+        },
+      });
 
       const pricing = await getActivePricingVersion(routed.hosted.id);
       await startAttempt(execution.id, {
         backend: process.env.INFERENCE_BACKEND ?? "llama-server",
         modelSlug: routed.resolvedModelSlug,
         attemptNo: 1,
+      });
+      await coreTrace?.event({
+        phase: "runtime",
+        kind: "engine.dispatched",
+        payload: {
+          backend: process.env.INFERENCE_BACKEND ?? "llama-server",
+          mmap: process.env.USE_MMAP !== "false",
+          model: routed.resolvedModelSlug,
+        },
       });
 
       const inferenceMessages = routed.redactedMessages ?? messages;
@@ -208,6 +265,69 @@ v1Router.post(
       let content = "";
       let ttftMs: number | null = null;
       const generationStarted = Date.now();
+      let tracedCharacters = 0;
+      let traceChunkCount = 0;
+      let lastTraceEventAt = generationStarted;
+
+      const traceDelta = async (delta: string) => {
+        if (!coreTrace) return;
+        const now = Date.now();
+        tracedCharacters += delta.length;
+        traceChunkCount += 1;
+        if (traceChunkCount === 1) {
+          await coreTrace.event({
+            phase: "generation",
+            kind: "token.first",
+            payload: { ttftMs, characters: delta.length },
+          });
+          lastTraceEventAt = now;
+          return;
+        }
+        // Batches avoid a database write per streamed chunk while still making
+        // the live inspector visibly update during long generations.
+        if (traceChunkCount % 16 === 0 || now - lastTraceEventAt >= 500) {
+          await coreTrace.event({
+            phase: "generation",
+            kind: "token.batch",
+            payload: {
+              chunks: traceChunkCount,
+              characters: tracedCharacters,
+              elapsedMs: now - generationStarted,
+              approximateTokens: Math.max(1, Math.round(tracedCharacters / 4)),
+            },
+          });
+          lastTraceEventAt = now;
+        }
+      };
+
+      const completeCoreTrace = async (input: {
+        promptTokens: number;
+        completionTokens: number;
+        latencyMs: number;
+        costMicros: bigint;
+        finishReason: string;
+      }) => {
+        await coreTrace?.complete({
+          model: routed.resolvedModelSlug,
+          status: "SUCCEEDED",
+          promptTokens: input.promptTokens,
+          completionTokens: input.completionTokens,
+          ttftMs,
+          generationMs: Date.now() - generationStarted,
+          latencyMs: input.latencyMs,
+          finishReason: input.finishReason,
+          costMicros: input.costMicros.toString(),
+          expertRouting: {
+            available: false,
+            reason: "The active llama-server adapter does not expose per-token MoE router choices.",
+          },
+          attentionMaps: {
+            available: false,
+            reason:
+              "Attention tensors require an instrumented debug runtime and are intentionally disabled.",
+          },
+        });
+      };
 
       res.setHeader("x-modelforge-request-id", execution.id);
       res.setHeader("x-modelforge-resolved-model", routed.resolvedModelSlug);
@@ -237,6 +357,7 @@ v1Router.post(
             if (chunk.delta) {
               if (ttftMs === null) ttftMs = Date.now() - generationStarted;
               content += chunk.delta;
+              await traceDelta(chunk.delta);
               res.write(
                 toSse(
                   buildChunk({
@@ -276,6 +397,7 @@ v1Router.post(
             if (chunk.delta) {
               if (ttftMs === null) ttftMs = Date.now() - generationStarted;
               content += chunk.delta;
+              await traceDelta(chunk.delta);
             }
             if (chunk.is_final) {
               finishReason =
@@ -314,6 +436,13 @@ v1Router.post(
             policyVersionId: routed.policyVersionId,
             policyDecisionHash: routed.decisionHash,
             costMicros,
+          });
+          await completeCoreTrace({
+            promptTokens,
+            completionTokens,
+            latencyMs,
+            costMicros,
+            finishReason,
           });
           res.json(
             buildCompletionResponse({
@@ -356,6 +485,13 @@ v1Router.post(
           policyDecisionHash: routed.decisionHash,
           costMicros,
         });
+        await completeCoreTrace({
+          promptTokens,
+          completionTokens,
+          latencyMs,
+          costMicros,
+          finishReason,
+        });
         res.write("data: [DONE]\n\n");
         res.addTrailers({ "x-modelforge-cost-micros": costMicros.toString() });
         res.end();
@@ -363,6 +499,9 @@ v1Router.post(
         res.removeListener("close", cancelOnDisconnect);
       }
     } catch (err) {
+      await coreTrace
+        ?.fail(err instanceof Error ? err.message : "Inference failed")
+        .catch(() => undefined);
       if (executionId && reservedTokens > 0) {
         await releaseQuota({
           customerId: req.auth!.customerId,

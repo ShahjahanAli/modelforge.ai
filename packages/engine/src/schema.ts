@@ -44,6 +44,8 @@ export const modelforgeControlsSchema = z
     prefer_local: z.boolean().optional(),
     knowledge_base_ids: z.array(z.string()).optional(),
     hedge: z.boolean().optional(),
+    /** Optional one-shot diagnostic session created by the control plane. */
+    trace_session_id: z.string().min(1).optional(),
   })
   .optional();
 

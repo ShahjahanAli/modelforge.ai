@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { loadEnv } from "./lib/env.js";
 import { ensureLocalNode } from "./lib/modernJobs.js";
 import { ensureSigningKey } from "./lib/receipts.js";
+import { hydrateArmedCoreTraces } from "./lib/coreTrace.js";
 import { internalRouter } from "./routes/internal.js";
 import { v1Router } from "./routes/v1.js";
 
@@ -47,7 +48,8 @@ const server = app.listen(env.GATEWAY_PORT, async () => {
   try {
     await ensureLocalNode();
     await ensureSigningKey();
-    console.log("Local node + signing key ready");
+    const armedTraces = await hydrateArmedCoreTraces();
+    console.log(`Local node + signing key ready (${armedTraces} diagnostic trace(s) armed)`);
   } catch (error) {
     console.warn("Modern platform bootstrap deferred:", error);
   }

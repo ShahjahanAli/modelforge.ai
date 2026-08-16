@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { ToastProvider } from "@/components/ui/Toast";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -33,7 +34,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // Extensions (e.g. Google Tag Assistant) inject attrs on <html>/<body> and
     // trigger harmless hydration mismatches in local/dev.
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
-      <body suppressHydrationWarning>{children}</body>
+      <body suppressHydrationWarning>
+        <ToastProvider>{children}</ToastProvider>
+      </body>
     </html>
   );
 }

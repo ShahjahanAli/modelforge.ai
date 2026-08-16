@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { HuggingFaceBrowser } from "@/components/admin/HuggingFaceBrowser";
 import {
   grantModelToAllPlansAction,
   registerDiscoveredAction,
@@ -73,6 +74,21 @@ export default async function AdminModelsPage() {
           </Badge>
         }
       />
+
+      <Panel>
+        <PanelHeader
+          title="Hugging Face model browser"
+          description="Search and download GGUF models directly to this host"
+          actions={
+            <Badge tone="info" dot>
+              GGUF only
+            </Badge>
+          }
+        />
+        <PanelBody>
+          <HuggingFaceBrowser />
+        </PanelBody>
+      </Panel>
 
       <Panel>
         <PanelHeader

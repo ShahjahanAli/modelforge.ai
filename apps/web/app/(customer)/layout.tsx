@@ -13,6 +13,7 @@ const workspaceGroup: NavGroup = {
   items: [
     { href: "/dashboard", label: "Usage", icon: "activity" },
     { href: "/chat", label: "Chat", icon: "chat" },
+    { href: "/core-inspector", label: "Core Inspector", icon: "brain" },
     { href: "/requests", label: "Requests", icon: "timer" },
     { href: "/keys", label: "API Keys", icon: "key" },
     { href: "/models", label: "Models", icon: "boxes" },
@@ -54,7 +55,14 @@ export default async function CustomerLayout({ children }: { children: React.Rea
   const role = (session.user as { role?: string }).role;
   const groups =
     role === "ADMIN"
-      ? [workspaceGroup, controlGroup, operationsGroup]
+      ? [
+          {
+            ...workspaceGroup,
+            items: workspaceGroup.items.filter((item) => item.href !== "/core-inspector"),
+          },
+          controlGroup,
+          operationsGroup,
+        ]
       : [workspaceGroup, controlGroup];
   const chatModels = await chatModelsForSession();
 

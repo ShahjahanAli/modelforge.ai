@@ -175,6 +175,50 @@ export function useChatStream(options: { defaultMaxTokens?: number } = {}) {
 
 export type ChatStream = ReturnType<typeof useChatStream>;
 
+const THINK_OPEN = /<(?:think|thinking|reasoning)>/i;
+const THINK_CLOSE = /<\/(?:think|thinking|reasoning)>/i;
+
+export interface SplitMessage {
+  /** Chain-of-thought the model wrapped in <think> tags. */
+  reasoning: string;
+  /** The user-facing answer with reasoning removed. */
+  answer: string;
+  /** True while a reasoning block is still open mid-stream. */
+  thinking: boolean;
+}
+
+/**
+ * Reasoning models emit their scratchpad inline. Split it out so the UI can
+ * collapse it instead of showing raw tags in the answer.
+ */
+export function splitReasoning(content: string): SplitMessage {
+  const reasoning: string[] = [];
+  let answer = "";
+  let rest = content;
+  let thinking = false;
+
+  while (rest.length > 0) {
+    const open = rest.match(THINK_OPEN);
+    if (!open || open.index === undefined) {
+      answer += rest;
+      break;
+    }
+    answer += rest.slice(0, open.index);
+    rest = rest.slice(open.index + open[0].length);
+
+    const close = rest.match(THINK_CLOSE);
+    if (!close || close.index === undefined) {
+      reasoning.push(rest);
+      thinking = true;
+      break;
+    }
+    reasoning.push(rest.slice(0, close.index));
+    rest = rest.slice(close.index + close[0].length);
+  }
+
+  return { reasoning: reasoning.join("\n\n").trim(), answer: answer.trim(), thinking };
+}
+
 export function finishLabel(message: ChatMessage): string {
   if (message.finishReason === "length") return "Token limit reached";
   if (message.finishReason === "stopped") return "Stopped";

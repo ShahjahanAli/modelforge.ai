@@ -1,9 +1,20 @@
 "use client";
 
-import { Bot, Check, Copy, Send, Sparkles, Square, User } from "lucide-react";
+import {
+  Bot,
+  Brain,
+  Check,
+  ChevronDown,
+  Copy,
+  Send,
+  Sparkles,
+  Square,
+  User,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   finishLabel,
+  splitReasoning,
   type ChatMessage,
   type ChatModelOption,
   type ChatStream,
@@ -22,6 +33,57 @@ const SUGGESTIONS = [
   "Create a deployment checklist",
 ];
 
+/**
+ * Reasoning models stream a scratchpad before answering. It stays out of the
+ * way by default and expands on demand, but auto-opens while it is the only
+ * thing the model has produced so far.
+ */
+function ReasoningBlock({
+  reasoning,
+  thinking,
+  hasAnswer,
+}: {
+  reasoning: string;
+  thinking: boolean;
+  hasAnswer: boolean;
+}) {
+  const [override, setOverride] = useState<boolean | null>(null);
+  const open = override ?? (thinking && !hasAnswer);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-line bg-surface-2/60">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-content-secondary transition-colors hover:bg-surface-3/60"
+        onClick={() => setOverride(!open)}
+        aria-expanded={open}
+      >
+        <Brain
+          className={`size-3.5 shrink-0 ${thinking ? "animate-pulse text-brand-600" : "text-content-muted"}`}
+          aria-hidden
+        />
+        <span className="flex-1 text-xs font-medium">
+          {thinking ? "Thinking…" : "Thought process"}
+        </span>
+        <span className="font-mono text-[10px] text-content-muted">
+          {open ? "hide" : "show"}
+        </span>
+        <ChevronDown
+          className={`size-3.5 shrink-0 text-content-muted transition-transform ${open ? "rotate-180" : ""}`}
+          aria-hidden
+        />
+      </button>
+      {open && (
+        <div className="max-h-64 overflow-y-auto border-t border-line px-2.5 py-2">
+          <p className="whitespace-pre-wrap break-words text-xs leading-5 text-content-muted">
+            {reasoning}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps) {
   const compact = variant === "widget";
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -37,7 +99,9 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
   }, [messages]);
 
   async function copyMessage(message: ChatMessage) {
-    await navigator.clipboard.writeText(message.content);
+    // Copy the answer only; the reasoning scratchpad is rarely what you want.
+    const { answer } = splitReasoning(message.content);
+    await navigator.clipboard.writeText(answer || message.content);
     setCopiedId(message.id);
     window.setTimeout(() => setCopiedId(null), 1500);
   }
@@ -85,7 +149,14 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
           </div>
         ) : (
           <div className={`mx-auto space-y-5 ${compact ? "" : "max-w-3xl"}`}>
-            {messages.map((message) => (
+            {messages.map((message) => {
+              const { reasoning, answer, thinking } =
+                message.role === "assistant" && !message.error
+                  ? splitReasoning(message.content)
+                  : { reasoning: "", answer: message.content, thinking: false };
+              const hasBody = Boolean(reasoning || answer);
+
+              return (
               <article
                 key={message.id}
                 className={`group flex gap-2.5 ${
@@ -106,8 +177,19 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
                         : "rounded-bl-md border border-line bg-surface-1 text-content-primary"
                   }`}
                 >
-                  {message.content ? (
-                    <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                  {hasBody ? (
+                    <div className="space-y-2">
+                      {reasoning && (
+                        <ReasoningBlock
+                          reasoning={reasoning}
+                          thinking={thinking && streaming}
+                          hasAnswer={Boolean(answer)}
+                        />
+                      )}
+                      {answer && (
+                        <div className="whitespace-pre-wrap break-words">{answer}</div>
+                      )}
+                    </div>
                   ) : (
                     <span className="flex items-center gap-1 py-1 text-content-muted">
                       <span className="size-1.5 animate-pulse rounded-full bg-brand-400" />
@@ -141,7 +223,8 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
                   </span>
                 )}
               </article>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

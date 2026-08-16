@@ -210,3 +210,79 @@ body {
   @apply flex items-center gap-2 rounded-lg border border-danger-200 bg-danger-50 px-3 py-2
     text-xs text-danger-700;
 }
+
+/* Overlay chrome: toasts, dialogs, and long-running progress feedback */
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes progress-stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 28px 0;
+  }
+}
+
+.animate-overlay-in {
+  animation: overlay-in 0.16s ease-out;
+}
+
+.animate-dialog-in {
+  animation: dialog-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.animate-toast-in {
+  animation: toast-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Diagonal stripes that keep moving while a phase has no measurable percentage */
+.progress-stripes {
+  background-image: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.32) 0 25%,
+    transparent 25% 50%,
+    rgba(255, 255, 255, 0.32) 50% 75%,
+    transparent 75% 100%
+  );
+  background-size: 28px 100%;
+  animation: progress-stripes 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-overlay-in,
+  .animate-dialog-in,
+  .animate-toast-in,
+  .progress-stripes {
+    animation: none;
+  }
+}

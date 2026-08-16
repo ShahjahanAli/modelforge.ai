@@ -11,9 +11,105 @@ import {
   unloadModel,
 } from "../engine/index.js";
 import { scanWeights, weightsDir } from "../lib/weights.js";
+import { armCoreTrace, disarmCoreTrace } from "../lib/coreTrace.js";
+import {
+  cancelHuggingFaceDownload,
+  getHuggingFaceDownload,
+  listHuggingFaceDownloads,
+  listHuggingFaceGgufFiles,
+  removeHuggingFaceDownload,
+  searchHuggingFaceModels,
+  startHuggingFaceDownload,
+} from "../lib/huggingFace.js";
 
 export const internalRouter = Router();
 internalRouter.use(internalAuth);
+
+internalRouter.get("/huggingface/search", async (req, res) => {
+  try {
+    const query = String(req.query.q ?? "");
+    const models = await searchHuggingFaceModels(query, Number(req.query.limit ?? 20));
+    res.json({ models });
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : "Hub search failed" });
+  }
+});
+
+internalRouter.get("/huggingface/files", async (req, res) => {
+  try {
+    const repoId = String(req.query.repo ?? "");
+    res.json(await listHuggingFaceGgufFiles(repoId));
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : "File listing failed" });
+  }
+});
+
+internalRouter.get("/huggingface/downloads", (_req, res) => {
+  res.json({ downloads: listHuggingFaceDownloads() });
+});
+
+internalRouter.post("/huggingface/downloads", async (req, res) => {
+  try {
+    const body = req.body as {
+      repoId?: string;
+      revision?: string;
+      filePath?: string;
+      expectedSize?: number;
+      sha256?: string | null;
+      register?: boolean;
+    };
+    if (!body.repoId || !body.filePath) {
+      return res.status(400).json({ error: "repoId and filePath are required" });
+    }
+    const download = await startHuggingFaceDownload({
+      repoId: body.repoId,
+      revision: body.revision,
+      filePath: body.filePath,
+      expectedSize: body.expectedSize,
+      sha256: body.sha256,
+      register: body.register,
+    });
+    res.status(202).json(download);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Download failed to start" });
+  }
+});
+
+internalRouter.get("/huggingface/downloads/:id", (req, res) => {
+  const download = getHuggingFaceDownload(req.params.id!);
+  if (!download) return res.status(404).json({ error: "Download not found" });
+  res.json(download);
+});
+
+internalRouter.delete("/huggingface/downloads/:id", (req, res) => {
+  const cancelled = cancelHuggingFaceDownload(req.params.id!);
+  const removed = cancelled ? false : removeHuggingFaceDownload(req.params.id!);
+  res.status(cancelled || removed ? 200 : 409).json({ cancelled, removed });
+});
+
+internalRouter.post("/diagnostics/traces/:traceId/arm", async (req, res) => {
+  const traceId = req.params.traceId!;
+  const customerId = String(req.body?.customerId ?? "");
+  if (!customerId) {
+    return res.status(400).json({ error: { type: "invalid_request", message: "customerId required" } });
+  }
+  const trace = await prisma.coreTraceSession.findFirst({
+    where: { id: traceId, customerId, status: "ARMED", expiresAt: { gt: new Date() } },
+    select: { id: true },
+  });
+  if (!trace) {
+    return res.status(404).json({ error: { type: "not_found", message: "Active trace not found" } });
+  }
+  armCoreTrace(customerId, traceId);
+  res.json({ armed: true, traceId });
+});
+
+internalRouter.delete("/diagnostics/traces/:traceId/arm", async (req, res) => {
+  const traceId = req.params.traceId!;
+  const customerId = String(req.body?.customerId ?? "");
+  disarmCoreTrace(customerId, traceId);
+  res.json({ armed: false, traceId });
+});
 
 internalRouter.post("/keys", async (req, res) => {
   const { customerId, label } = req.body as { customerId?: string; label?: string };

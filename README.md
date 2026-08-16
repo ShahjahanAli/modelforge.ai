@@ -1,8 +1,8 @@
 # ModelForge
 
 > A self-hosted LLM runtime platform for serving GGUF models through an
-> OpenAI-compatible API—with model lifecycle management, usage metering,
-> billing primitives, and separate customer and administrator portals.
+> OpenAI-compatible API—with Hugging Face downloads, model lifecycle management,
+> usage metering, billing primitives, and separate customer and administrator portals.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-6366f1.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -18,12 +18,18 @@ do not need a C++ compiler or CUDA toolchain.
 
 - **OpenAI-compatible API** — streaming and non-streaming
   `/v1/chat/completions`, plus tools/response_format metadata and `model: "auto"`
+- **Hugging Face model browser** — search GGUF repositories, pick quantizations,
+  download with resume/SHA-256 verification, and auto-register into the catalog
+- **Chat playground** — subscriber ChatGPT-style chat page and floating bubble,
+  with collapsible reasoning blocks for `<think>` models
 - **Immutable execution ledger** — every request gets an `InferenceRequest` with
   attempts, timings, request-time pricing, and idempotent quota commits
 - **Signed usage receipts** — Ed25519 receipts with public-key verification and
   export (`/usage/receipts`, `/verify-receipt`)
 - **Budget-aware routing & policies** — versioned routing/budget/data/tool
   policies with PII redaction and atomic spend ceilings
+- **Opt-in Core Inspector** — one-shot diagnostic capture of pipeline, routing,
+  generation, and metering events without storing prompt or response text
 - **Residency reservations** — warm-model leases that protect capacity from LRU
   eviction, plus local node heartbeats and deployments
 - **SLO enforcement & credits** — latency/availability windows with automatic
@@ -35,7 +41,7 @@ do not need a C++ compiler or CUDA toolchain.
 - **Local federation simulation** — loopback node transport with production mTLS
   adapter boundaries
 - **LM Studio-style local serving** — discover GGUF files, register them, and
-  load them on demand
+  load them on demand with progress feedback
 - **Process-isolated inference** — each loaded model runs in a loopback-only
   `llama-server` process
 - **RAM-aware model pool** — configurable budget with reservation-aware eviction
@@ -59,6 +65,7 @@ flowchart LR
     subgraph Clients
         Browser[Web browser]
         SDK[OpenAI SDK / API client]
+        HF[Hugging Face Hub]
     end
 
     subgraph ControlPlane["Control plane"]
@@ -66,7 +73,7 @@ flowchart LR
     end
 
     subgraph GatewayPlane["API gateway"]
-        Gateway["Express 5<br/>Auth · Quotas · Metering"]
+        Gateway["Express 5<br/>Auth · Quotas · Metering · Downloads"]
         UsageWorker["Usage worker"]
         InvoiceWorker["Invoice worker"]
     end
@@ -87,6 +94,8 @@ flowchart LR
     Browser -->|HTTPS| Web
     Web -->|internal token| Gateway
     SDK -->|Bearer API key| Gateway
+    Gateway -->|search / resolve| HF
+    HF -->|GGUF download| Weights
     Gateway --> Pool
     Pool --> LlamaA
     Pool --> LlamaB
@@ -107,10 +116,10 @@ flowchart LR
 | Component | Responsibility |
 |---|---|
 | `apps/web` | Authenticated customer and admin UI; browser traffic reaches internal services through server-side routes/actions |
-| `apps/gateway` | Public OpenAI API, API-key authentication, plan enforcement, quotas, inference orchestration, and metering |
+| `apps/gateway` | Public OpenAI API, API-key authentication, plan enforcement, quotas, Hugging Face downloads, inference orchestration, and metering |
 | `llama-server` pool | Default inference backend; one private OS process per loaded model |
 | `apps/inference-engine` | Optional Rust gRPC backend with mmap model loading and continuous batching |
-| PostgreSQL | Users, subscriptions, plans, model registry, API-key hashes, usage events, and invoices |
+| PostgreSQL | Users, subscriptions, plans, model registry, API-key hashes, usage events, receipts, and invoices |
 | Redis / BullMQ | Production-grade asynchronous usage and invoice jobs; optional for local development |
 
 ## Request and data flow
@@ -156,6 +165,8 @@ documented direct-Postgres fallback.
 
 ```mermaid
 flowchart LR
+    Source{"Model source"}
+    HF["Hugging Face browser<br/>search · quant · download"]
     Copy["Copy .gguf into<br/>MODEL_WEIGHTS_DIR"]
     Scan["Filesystem scan"]
     Register["Register metadata<br/>in PostgreSQL"]
@@ -167,15 +178,19 @@ flowchart LR
     Resident["Resident in RAM"]
     Evict["LRU eviction<br/>when budget is exceeded"]
 
-    Copy --> Scan --> Register --> Entitle --> Warm
+    Source -->|Hub| HF --> Scan
+    Source -->|manual| Copy --> Scan
+    Scan --> Register --> Entitle --> Warm
     Warm -->|manual| Admin --> Spawn
     Warm -->|LLAMA_AUTO_LOAD=true| First --> Spawn
     Spawn --> Resident --> Evict
     Evict -. reload on demand .-> Spawn
 ```
 
-Copying a model file does not automatically expose it to customers. Registration
-creates the catalog entry, while plan entitlement determines who can call it.
+Copying or downloading a model file does not automatically expose it to
+customers. Registration creates the catalog entry (Hugging Face downloads can
+auto-register after verification), while plan entitlement determines who can
+call it.
 
 ## Technology stack
 
@@ -185,6 +200,7 @@ creates the catalog entry, while plan entitlement determines who can call it.
 | API gateway | Express 5, Zod, Prisma |
 | Default inference | Prebuilt `llama-server` from llama.cpp |
 | Optional inference | Rust, tonic gRPC, `llama-cpp-2` |
+| Model discovery | Local GGUF scan + Hugging Face Hub API |
 | Data | PostgreSQL 16 |
 | Queueing | Redis 7, BullMQ |
 | Billing | Mock, Stripe, bKash, and Nagad adapters |
@@ -194,14 +210,15 @@ creates the catalog entry, while plan entitlement determines who can call it.
 
 ```text
 apps/
-├── gateway/            OpenAI API, auth, quotas, metering, model pool
+├── gateway/            OpenAI API, auth, quotas, metering, HF downloads, model pool
 ├── web/                Customer and administrator control plane
 └── inference-engine/   Optional Rust gRPC inference backend
 packages/
 ├── billing/            Invoice calculation and payment adapters
 ├── config/             Shared TypeScript and ESLint configuration
 ├── db/                 Prisma schema, migrations, seed data
-└── engine/             Shared OpenAI schemas and error contracts
+├── engine/             Shared OpenAI schemas and error contracts
+└── platform/           Signing, policy, PII, SLO, RAG, and federation helpers
 infra/
 ├── docker-compose.dev.yml
 └── systemd/            Example production service units
@@ -213,7 +230,7 @@ scripts/                Binary fetch, model scan, diagnostics, E2E, benchmark
 - Node.js **20+**
 - pnpm **10+**
 - PostgreSQL, either local or through Docker
-- A compatible `.gguf` model
+- A compatible `.gguf` model, or network access to download one from Hugging Face
 - Redis is recommended for production but optional for local development
 
 The default `llama-server` backend does **not** require Rust, CMake, Clang,
@@ -268,19 +285,35 @@ before any shared or production deployment.
 
 ## Add and serve a model
 
+### Option A — Hugging Face browser (recommended)
+
 1. Configure an absolute `MODEL_WEIGHTS_DIR` in `.env`.
-2. Copy a GGUF file anywhere below that directory. Nested folders are supported.
-3. Confirm discovery:
+2. Optionally set `HF_TOKEN` for private or gated repositories.
+3. Sign in as an administrator and open **Model Registry** at `/admin/models`.
+4. Search the Hub, select a repository, choose a quantization, and click
+   **Download**.
+5. Wait for verification to complete. Multi-shard GGUFs are queued together and
+   registered only after every shard finishes.
+6. Grant the model to the appropriate plans.
+7. Optionally pre-warm it from **Infrastructure** at `/admin/infra`.
+
+Downloads are host-side, resumable (`.part` files), SHA-256 verified when Hub
+metadata provides a hash, and limited by `HF_MAX_CONCURRENT_DOWNLOADS` /
+`HF_MAX_DOWNLOAD_GB`. Partial transfers continue even if the browser tab closes.
+
+### Option B — Local filesystem
+
+1. Copy a `.gguf` file anywhere below `MODEL_WEIGHTS_DIR`. Nested folders are
+   supported.
+2. Confirm discovery:
 
    ```bash
    pnpm weights:scan
    ```
 
-4. Sign in as an administrator and open **Model Registry** at `/admin/models`.
-5. Register the discovered file and review its slug, quantization, context
-   length, thread count, and pricing.
-6. Grant the model to the appropriate plans.
-7. Optionally pre-warm it from **Infrastructure** at `/admin/infra`.
+3. Open `/admin/models`, register the discovered file, and review its slug,
+   quantization, context length, thread count, and pricing.
+4. Grant the model to plans and optionally Load it from `/admin/infra`.
 
 With `LLAMA_AUTO_LOAD=true`, the first authorized API request starts the model
 automatically.
@@ -292,6 +325,21 @@ pnpm engine:status
 # Warm a registered model by slug
 pnpm engine:status your-model-slug
 ```
+
+## Subscriber experience
+
+| Surface | Path | Purpose |
+|---|---|---|
+| Usage overview | `/dashboard` | Throughput, latency, spend, and recent requests |
+| Chat | `/chat` | Full-page streaming playground with generation settings |
+| Floating chat bubble | all subscriber pages | Compact chat overlay; hidden on `/chat` |
+| Core Inspector | `/core-inspector` | Opt-in one-shot diagnostic capture for the next request |
+| Requests | `/requests` | Immutable execution history and cost debugger |
+| Receipts | `/usage/receipts` | Signed usage proofs and verification |
+
+Reasoning models that emit `<think>` / `<thinking>` / `<reasoning>` tags are
+rendered with a collapsible “Thought process” block. The visible answer is
+shown separately, and Copy exports the answer only.
 
 ## OpenAI-compatible API
 
@@ -334,12 +382,16 @@ console.log(response.choices[0]?.message.content);
 Streaming uses the standard OpenAI Server-Sent Events format and terminates
 with `data: [DONE]`.
 
+Use `"model": "auto"` to let versioned routing policies select an entitled
+model based on cost, quality, and latency preferences.
+
 ### Reasoning models
 
 Some reasoning models consume part of `max_tokens` before producing visible
 assistant content. Use an appropriate token budget; a very small limit can
 produce an empty `content` field even though reasoning tokens were generated.
-All generated tokens count toward metering.
+All generated tokens count toward metering. The chat UI collapses inline
+thought tags so operators can inspect reasoning without burying the answer.
 
 ## Inference backends
 
@@ -371,17 +423,25 @@ Copy `.env.example` to `.env`. The most important settings are:
 | `REDIS_ENABLED` | Enables Redis-backed rate limits and BullMQ workers |
 | `REDIS_URL` | Redis connection string |
 | `MODEL_WEIGHTS_DIR` | Absolute path to local GGUF storage |
+| `HF_TOKEN` | Optional read-only token for private or gated Hugging Face repositories |
+| `HF_MAX_CONCURRENT_DOWNLOADS` | Concurrent host-side Hub downloads (default `2`) |
+| `HF_MAX_DOWNLOAD_GB` | Maximum allowed size for one GGUF file (default `100`) |
 | `INFERENCE_BACKEND` | `llama-server` or `grpc` |
 | `LLAMA_SERVER_BIN` | Optional explicit path to `llama-server` |
 | `LLAMA_AUTO_LOAD` | Loads an entitled model on its first request |
+| `LLAMA_REASONING` | Pass-through to `llama-server` (`off` recommended for chat UX) |
+| `INFERENCE_TIMEOUT_MS` | Abort long generations (default `900000`) |
 | `TOTAL_RAM_BUDGET_MB` | Model-pool RAM budget used for LRU decisions |
 | `MAX_CONCURRENT_PER_MODEL` | Per-model concurrency ceiling |
 | `INTERNAL_SERVICE_TOKEN` | Protects internal gateway routes |
 | `JWT_SECRET` / `AUTH_SECRET` | Gateway and Auth.js signing secrets |
+| `MODELFORGE_SIGNING_DIR` | Ed25519 usage-receipt key storage |
+| `MODELFORGE_PII_REDACT` | Redact emails/phones/cards before inference |
 | `BILLING_MODE` | `mock` or a configured live payment flow |
 
 Never commit `.env`. The repository includes `.env.example` with development
-placeholders only.
+placeholders only. `HF_TOKEN` stays server-side and is never exposed to the
+browser.
 
 ## Authentication, quotas, and billing
 
@@ -391,6 +451,8 @@ placeholders only.
   and overage pricing.
 - Usage records include prompt tokens, completion tokens, model, latency, and
   an idempotency key.
+- Dashboard chat uses a session-scoped credential through the same quota,
+  policy, metering, and receipt pipeline as API traffic.
 - `BILLING_MODE=mock` works without credentials.
 - Stripe can be enabled with its secret and webhook keys.
 - bKash and Nagad adapters provide extension points for Bangladesh payments.
@@ -412,6 +474,9 @@ pnpm engine:status
 # OpenAI SDK compatibility (gateway must be running)
 MODELFORGE_API_KEY=mf_YOUR_KEY pnpm test:e2e
 
+# Opt-in Core Inspector capture against a live subscriber key
+pnpm test:inspector
+
 # Basic concurrency benchmark
 MODELFORGE_API_KEY=mf_YOUR_KEY pnpm benchmark
 
@@ -425,6 +490,8 @@ pnpm --filter @modelforge/gateway test
 - Never expose `llama-server` or the inference gRPC port to the public network.
 - Use a unique, high-entropy `INTERNAL_SERVICE_TOKEN`, `JWT_SECRET`, and
   `AUTH_SECRET`.
+- Keep `HF_TOKEN` as a read-only Hub token with the minimum scopes needed for
+  gated downloads; rotate it like any other secret.
 - Enable Redis and run the usage and invoice workers:
 
   ```bash
@@ -438,6 +505,7 @@ pnpm --filter @modelforge/gateway test
   `TOTAL_RAM_BUDGET_MB`.
 - Keep mmap enabled unless the storage or deployment environment requires
   otherwise.
+- Size `INFERENCE_TIMEOUT_MS` for your host’s tok/s × max completion length.
 - Back up PostgreSQL and treat model files as separately managed artifacts.
 - Review the example service definitions in `infra/systemd/` before deployment.
 
@@ -448,6 +516,9 @@ Local-first vertical slices are enabled by default after
 
 | Capability | Where to look |
 |---|---|
+| Hugging Face GGUF browser | `/admin/models` |
+| Model load progress + eject confirm | `/admin/infra` |
+| Chat playground + floating bubble | `/chat` |
 | Immutable executions + cost debugger | `/requests`, `GET /v1/requests/:id` |
 | Signed usage receipts | `/usage/receipts`, `/verify-receipt`, `/.well-known/modelforge-usage-keys.json` |
 | Policies, budgets, auto-routing | `/policies`, `/budgets`, `model: "auto"` |
@@ -456,6 +527,14 @@ Local-first vertical slices are enabled by default after
 | Evaluations + canaries | `/admin/evaluations` |
 | Knowledge ingest | `/knowledge` |
 | Audit trail | `/admin/audit` |
+| Opt-in Inference Core Inspector | `/core-inspector` |
+
+The Core Inspector is disabled during normal inference. A subscriber can arm a
+10-minute, one-shot capture for the next request; it records privacy-safe
+pipeline, routing, runtime, token-batch, and performance events, then
+automatically deactivates. Prompt and response content are never retained.
+Per-token MoE routing and attention tensors are reported as unavailable unless
+an instrumented runtime adapter can provide genuine data.
 
 Optional Redis workers for SLO rollups and evaluations:
 
@@ -476,11 +555,13 @@ flowchart TD
     Internal["Internal boundary<br/>service token"]
     Inference["Inference boundary<br/>loopback / private network"]
     Storage["Persistence boundary<br/>PostgreSQL + Redis"]
+    Hub["Hugging Face Hub"]
 
     Internet -->|HTTPS| Public
     Public -->|x-internal-token| Internal
     Internal --> Inference
     Internal --> Storage
+    Internal -->|HF_TOKEN server-side only| Hub
 ```
 
 - Helmet and explicit CORS configuration protect the Express surface.
@@ -489,6 +570,10 @@ flowchart TD
 - Internal management routes require `x-internal-token`.
 - Model processes bind to `127.0.0.1`.
 - Browser clients do not call private inference ports directly.
+- Hugging Face downloads are initiated by admins only; the Hub token and
+  destination paths never leave the gateway.
+- Download destinations are constrained under `MODEL_WEIGHTS_DIR` and verified
+  against Hub manifests before transfer.
 - GGUF weights, prebuilt runtime binaries, secrets, and generated artifacts are
   excluded from version control.
 
@@ -500,15 +585,18 @@ or customer data in a public issue.
 | Path | Reason |
 |---|---|
 | `.env` | Contains local credentials and secrets |
-| `data/models/*.gguf` | Large model artifacts with independent licenses |
+| `data/models/**/*.gguf` | Large model artifacts with independent licenses |
+| `data/models/**/*.gguf.part` | Incomplete Hugging Face downloads |
+| `data/signing/` | Local usage-receipt signing material |
 | `vendor/llama.cpp` | Reproducibly fetched with `pnpm llama:fetch` |
 | `node_modules/`, `.next/`, `dist/`, `target/` | Dependency and build outputs |
 
 ## Project status
 
 ModelForge is an early public release with a working local-first modern control
-plane: immutable executions, signed receipts, policy routing, residency
-reservations, SLO credits, evaluations, knowledge ingest, and federation
+plane: Hugging Face GGUF acquisition, chat playground, immutable executions,
+signed receipts, policy routing, residency reservations, SLO credits,
+evaluations, knowledge ingest, Core Inspector diagnostics, and federation
 adapter boundaries. Payment integrations default to mock mode and should be
 validated against provider sandboxes before production use.
 

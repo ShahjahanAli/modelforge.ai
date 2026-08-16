@@ -18,6 +18,7 @@
     "engine:status": "dotenv -e .env -- node scripts/engine-status.mjs",
     "weights:scan": "dotenv -e .env -- node scripts/scan-weights.mjs",
     "test:e2e": "dotenv -e .env -- node scripts/e2e-openai.mjs",
+    "test:inspector": "dotenv -e .env -- node scripts/e2e-core-inspector.mjs",
     "benchmark": "dotenv -e .env -- node scripts/benchmark-openai.mjs",
     "infra:up": "docker compose -f infra/docker-compose.dev.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.dev.yml down",
