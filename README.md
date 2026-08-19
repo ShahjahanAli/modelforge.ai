@@ -1,7 +1,7 @@
 # ModelForge
 
 > A self-hosted LLM runtime platform for serving GGUF models through an
-> OpenAI-compatible API—with Hugging Face downloads, model lifecycle management,
+> OpenAI-compatible API -- with Hugging Face downloads, model lifecycle management,
 > usage metering, billing primitives, and separate customer and administrator portals.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-6366f1.svg)](LICENSE)
@@ -16,42 +16,42 @@ do not need a C++ compiler or CUDA toolchain.
 
 ## Highlights
 
-- **OpenAI-compatible API** — streaming and non-streaming
+- **OpenAI-compatible API** -- streaming and non-streaming
   `/v1/chat/completions`, plus tools/response_format metadata and `model: "auto"`
-- **Hugging Face model browser** — search GGUF repositories, pick quantizations,
+- **Hugging Face model browser** -- search GGUF repositories, pick quantizations,
   download with resume/SHA-256 verification, and auto-register into the catalog
-- **Chat playground** — subscriber ChatGPT-style chat page and floating bubble,
+- **Chat playground** -- subscriber ChatGPT-style chat page and floating bubble,
   with collapsible reasoning blocks for `<think>` models
-- **Immutable execution ledger** — every request gets an `InferenceRequest` with
+- **Immutable execution ledger** -- every request gets an `InferenceRequest` with
   attempts, timings, request-time pricing, and idempotent quota commits
-- **Signed usage receipts** — Ed25519 receipts with public-key verification and
+- **Signed usage receipts** -- Ed25519 receipts with public-key verification and
   export (`/usage/receipts`, `/verify-receipt`)
-- **Budget-aware routing & policies** — versioned routing/budget/data/tool
+- **Budget-aware routing & policies** -- versioned routing/budget/data/tool
   policies with PII redaction and atomic spend ceilings
-- **Opt-in Core Inspector** — one-shot diagnostic capture of pipeline, routing,
+- **Opt-in Core Inspector** -- one-shot diagnostic capture of pipeline, routing,
   generation, and metering events without storing prompt or response text
-- **Residency reservations** — warm-model leases that protect capacity from LRU
+- **Residency reservations** -- warm-model leases that protect capacity from LRU
   eviction, plus local node heartbeats and deployments
-- **SLO enforcement & credits** — latency/availability windows with automatic
+- **SLO enforcement & credits** -- latency/availability windows with automatic
   service-credit ledger entries
-- **Evaluations & canaries** — revision-gated eval suites and traffic-split
+- **Evaluations & canaries** -- revision-gated eval suites and traffic-split
   channels
-- **Knowledge & memory** — tenant knowledge bases, chunk embeddings, retrieval
+- **Knowledge & memory** -- tenant knowledge bases, chunk embeddings, retrieval
   cost attribution, and retention controls
-- **Local federation simulation** — loopback node transport with production mTLS
+- **Local federation simulation** -- loopback node transport with production mTLS
   adapter boundaries
-- **LM Studio-style local serving** — discover GGUF files, register them, and
+- **LM Studio-style local serving** -- discover GGUF files, register them, and
   load them on demand with progress feedback
-- **Process-isolated inference** — each loaded model runs in a loopback-only
+- **Process-isolated inference** -- each loaded model runs in a loopback-only
   `llama-server` process
-- **RAM-aware model pool** — configurable budget with reservation-aware eviction
-- **Multi-tenant access** — plans, API keys, quotas, rate limits, and model
+- **RAM-aware model pool** -- configurable budget with reservation-aware eviction
+- **Multi-tenant access** -- plans, API keys, quotas, rate limits, and model
   entitlements
-- **Operations console** — dashboards for requests, receipts, policies, nodes,
+- **Operations console** -- dashboards for requests, receipts, policies, nodes,
   SLOs, evaluations, and audit events
-- **Usage and billing pipeline** — token metering, BullMQ workers, invoices,
+- **Usage and billing pipeline** -- token metering, BullMQ workers, invoices,
   and pluggable payment adapters
-- **CPU-first defaults** — mmap, physical-core thread sizing, and conservative
+- **CPU-first defaults** -- mmap, physical-core thread sizing, and conservative
   per-model concurrency
 
 ## System architecture
@@ -78,7 +78,7 @@ flowchart LR
         InvoiceWorker["Invoice worker"]
     end
 
-    subgraph DataPlane["Inference data plane — private"]
+    subgraph DataPlane["Inference data plane -- private"]
         Pool["Model process pool<br/>RAM budget + LRU"]
         LlamaA["llama-server<br/>Model A"]
         LlamaB["llama-server<br/>Model B"]
@@ -210,19 +210,20 @@ call it.
 
 ```text
 apps/
-├── gateway/            OpenAI API, auth, quotas, metering, HF downloads, model pool
-├── web/                Customer and administrator control plane
-└── inference-engine/   Optional Rust gRPC inference backend
+  gateway/            OpenAI API, auth, quotas, metering, HF downloads, model pool
+  web/                Customer and administrator control plane
+  inference-engine/   Optional Rust gRPC inference backend
 packages/
-├── billing/            Invoice calculation and payment adapters
-├── config/             Shared TypeScript and ESLint configuration
-├── db/                 Prisma schema, migrations, seed data
-├── engine/             Shared OpenAI schemas and error contracts
-└── platform/           Signing, policy, PII, SLO, RAG, and federation helpers
+  billing/            Invoice calculation and payment adapters
+  config/             Shared TypeScript and ESLint configuration
+  db/                 Prisma schema, migrations, seed data
+  engine/             Shared OpenAI schemas and error contracts
+  platform/           Signing, policy, PII, SLO, RAG, and federation helpers
 infra/
-├── docker-compose.dev.yml
-└── systemd/            Example production service units
-scripts/                Binary fetch, model scan, diagnostics, E2E, benchmark
+  docker-compose.dev.yml
+  nginx-modelforge.conf   Production Nginx reverse proxy config
+  systemd/                Example production service units
+scripts/                  Binary fetch, model scan, diagnostics, E2E, benchmark
 ```
 
 ## Prerequisites
@@ -289,7 +290,7 @@ before any shared or production deployment.
 
 ## Add and serve a model
 
-### Option A — Hugging Face browser (recommended)
+### Option A -- Hugging Face browser (recommended)
 
 1. Configure an absolute `MODEL_WEIGHTS_DIR` in `.env`.
 2. Optionally set `HF_TOKEN` for private or gated repositories.
@@ -305,7 +306,7 @@ Downloads are host-side, resumable (`.part` files), SHA-256 verified when Hub
 metadata provides a hash, and limited by `HF_MAX_CONCURRENT_DOWNLOADS` /
 `HF_MAX_DOWNLOAD_GB`. Partial transfers continue even if the browser tab closes.
 
-### Option B — Local filesystem
+### Option B -- Local filesystem
 
 1. Copy a `.gguf` file anywhere below `MODEL_WEIGHTS_DIR`. Nested folders are
    supported.
@@ -342,7 +343,7 @@ pnpm engine:status your-model-slug
 | Receipts | `/usage/receipts` | Signed usage proofs and verification |
 
 Reasoning models that emit `<think>` / `<thinking>` / `<reasoning>` tags are
-rendered with a collapsible “Thought process” block. The visible answer is
+rendered with a collapsible "Thought process" block. The visible answer is
 shown separately, and Copy exports the answer only.
 
 ## OpenAI-compatible API
@@ -491,30 +492,116 @@ MODELFORGE_API_KEY=mf_YOUR_KEY pnpm benchmark
 pnpm --filter @modelforge/gateway test
 ```
 
-## Production guidance
+## Production deployment (Ubuntu + PM2 + Nginx)
 
-- Put TLS and a reverse proxy or ingress in front of the web app and gateway.
-- Never expose `llama-server` or the inference gRPC port to the public network.
-- Use a unique, high-entropy `INTERNAL_SERVICE_TOKEN`, `JWT_SECRET`, and
-  `AUTH_SECRET`.
-- Keep `HF_TOKEN` as a read-only Hub token with the minimum scopes needed for
-  gated downloads; rotate it like any other secret.
-- Enable Redis and run the usage and invoice workers:
+The recommended production setup uses PM2 as the process manager and Nginx as
+the reverse proxy. The project root is typically `/var/www/modelforge.ai`.
 
-  ```bash
-  pnpm --filter @modelforge/gateway worker
-  pnpm --filter @modelforge/gateway invoice-worker
-  ```
+### 1. Server prerequisites
 
-- Keep `MAX_CONCURRENT_PER_MODEL` low for CPU inference, commonly 1–2.
-- Set model threads near the physical-core count, not logical thread count.
-- Reserve approximately 25–30% of system RAM outside
-  `TOTAL_RAM_BUDGET_MB`.
-- Keep mmap enabled unless the storage or deployment environment requires
-  otherwise.
-- Size `INFERENCE_TIMEOUT_MS` for your host’s tok/s × max completion length.
-- Back up PostgreSQL and treat model files as separately managed artifacts.
-- Review the example service definitions in `infra/systemd/` before deployment.
+```bash
+# Node.js 20+, pnpm, PM2
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+npm i -g pnpm pm2
+
+# PostgreSQL and Redis
+sudo apt install -y postgresql redis-server
+```
+
+### 2. Clone, install, and build
+
+```bash
+cd /var/www/modelforge.ai
+
+pnpm install --frozen-lockfile
+
+# Create .env from the example and fill in secrets
+cp .env.example .env
+nano .env    # DATABASE_URL, JWT_SECRET, AUTH_SECRET, REDIS_URL, etc.
+
+# Generate Prisma client, run migrations, seed
+pnpm db:generate
+pnpm db:deploy
+pnpm db:seed
+
+# Fetch prebuilt llama-server binary (Linux x86_64)
+pnpm llama:fetch
+
+# Build all packages and apps
+pnpm build
+```
+
+### 3. Start with PM2
+
+An `ecosystem.config.cjs` is included in the repository root. It starts four
+processes:
+
+| PM2 name | What it runs | Port |
+|---|---|---|
+| `modelforge-gateway` | Express API + llama-server process pool | `9000` |
+| `modelforge-web` | Next.js control plane | `9001` |
+| `modelforge-usage-worker` | BullMQ usage event persistence | -- |
+| `modelforge-invoice-worker` | Scheduled invoice generation | -- |
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save
+pm2 startup    # auto-start on server reboot
+```
+
+Adjust `APP_ROOT` at the top of `ecosystem.config.cjs` if your deploy path
+differs from `/var/www/modelforge.ai`.
+
+### 4. Nginx reverse proxy
+
+An example Nginx config is provided at `infra/nginx-modelforge.conf`.
+
+```bash
+sudo cp infra/nginx-modelforge.conf /etc/nginx/sites-available/modelforge.conf
+sudo ln -s /etc/nginx/sites-available/modelforge.conf /etc/nginx/sites-enabled/
+# Edit server_name to your domain or IP
+sudo nano /etc/nginx/sites-available/modelforge.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+The Nginx config routes:
+
+| Location | Upstream | Purpose |
+|---|---|---|
+| `/` | Next.js `:9001` | Admin panel, customer portal, chat UI |
+| `/v1/` | Gateway `:9000` | OpenAI-compatible API with SSE streaming |
+| `/internal/` | Gateway `:9000` | Management routes, **localhost only** |
+| `/_next/static/` | Next.js `:9001` | Static assets with long-lived cache |
+| `/healthz` | Gateway `:9000` | Health check endpoint |
+
+gRPC (`:9002`) and llama-server ports (`:9100+`) are never proxied.
+
+### 5. SSL with Let's Encrypt (optional)
+
+```bash
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
+```
+
+Then uncomment the HTTPS server block in `infra/nginx-modelforge.conf`.
+
+### Production hardening checklist
+
+- Use unique, high-entropy values for `INTERNAL_SERVICE_TOKEN`, `JWT_SECRET`,
+  and `AUTH_SECRET`.
+- Keep `HF_TOKEN` as a read-only Hub token with minimum scopes; rotate
+  regularly.
+- Keep `MAX_CONCURRENT_PER_MODEL` low for CPU inference (1-2).
+- Set `DEFAULT_N_THREADS` near the physical-core count, not logical thread
+  count.
+- Reserve 25-30% of system RAM outside `TOTAL_RAM_BUDGET_MB`.
+- Keep mmap enabled unless the storage environment requires otherwise.
+- Size `INFERENCE_TIMEOUT_MS` for your host's tok/s multiplied by max
+  completion length.
+- Back up PostgreSQL regularly and treat model files as separately managed
+  artifacts.
+- Remove or change the seeded dev accounts before opening to real users.
 
 ## Modern platform features
 
@@ -613,4 +700,4 @@ Issues and focused pull requests are welcome.
 
 ModelForge is released under the [MIT License](LICENSE).
 
-Copyright © 2026 Shahjahan Ali.
+Copyright 2026 Shahjahan Ali.

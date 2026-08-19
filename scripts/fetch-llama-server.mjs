@@ -25,10 +25,12 @@ function assetPattern() {
   switch (os.platform()) {
     case "win32":
       return new RegExp(`bin-win-${variant}-${arch}\\.zip$`);
-    case "linux":
-      return new RegExp(`bin-ubuntu-${variant === "cpu" ? "" : `${variant}-`}${arch}\\.zip$`);
+    case "linux": {
+      const variantPart = variant === "cpu" ? "" : `${variant}-`;
+      return new RegExp(`bin-ubuntu-${variantPart}${arch}\\.tar\\.gz$`);
+    }
     case "darwin":
-      return new RegExp(`bin-macos-${arch}\\.zip$`);
+      return new RegExp(`bin-macos-${arch}\\.tar\\.gz$`);
     default:
       throw new Error(`Unsupported platform: ${os.platform()}`);
   }
@@ -47,19 +49,21 @@ async function fetchJson(url) {
   return res.json();
 }
 
-function extract(zipPath, destination) {
+function extract(archivePath, destination) {
   if (os.platform() === "win32") {
     execFileSync(
       "powershell",
       [
         "-NoProfile",
         "-Command",
-        `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destination}' -Force`,
+        `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${destination}' -Force`,
       ],
       { stdio: "inherit" },
     );
+  } else if (archivePath.endsWith(".tar.gz") || archivePath.endsWith(".tgz")) {
+    execFileSync("tar", ["-xzf", archivePath, "-C", destination], { stdio: "inherit" });
   } else {
-    execFileSync("unzip", ["-o", "-q", zipPath, "-d", destination], { stdio: "inherit" });
+    execFileSync("unzip", ["-o", "-q", archivePath, "-d", destination], { stdio: "inherit" });
   }
 }
 
