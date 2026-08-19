@@ -6,7 +6,8 @@ import { Eraser, Maximize2, MessageSquare, Settings2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatConsole } from "./ChatConsole";
 import { ChatSettings } from "./ChatSettings";
-import { useChatStream, type ChatModelOption } from "./useChatStream";
+import { useChatSession } from "./ChatSession";
+import type { ChatModelOption } from "./useChatStream";
 
 /**
  * Persistent chat entry point. Lives in the customer shell so the conversation
@@ -17,7 +18,7 @@ export function ChatWidget({ models }: { models: ChatModelOption[] }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const chat = useChatStream({ defaultMaxTokens: 1024 });
+  const chat = useChatSession();
 
   useEffect(() => {
     if (!open) return;
@@ -34,7 +35,7 @@ export function ChatWidget({ models }: { models: ChatModelOption[] }) {
   return (
     <div className="pointer-events-none fixed inset-0 z-50">
       {open && (
-        <div className="pointer-events-auto absolute inset-x-3 bottom-3 top-3 flex flex-col overflow-hidden rounded-2xl border border-line-strong bg-surface-1 shadow-[0_24px_60px_rgba(16,24,40,0.22)] sm:inset-auto sm:bottom-24 sm:right-5 sm:top-auto sm:h-[34rem] sm:w-[26rem]">
+        <div className="pointer-events-auto absolute inset-x-3 bottom-3 top-3 flex flex-col overflow-hidden rounded-2xl border border-line-strong bg-surface-1 shadow-[0_24px_60px_rgba(16,24,40,0.22)] @container sm:inset-auto sm:bottom-24 sm:right-5 sm:top-auto sm:h-[34rem] sm:w-[26rem]">
           <div className="flex items-center gap-2 border-b border-line bg-surface-1 px-3 py-2.5">
             <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-brand-100 bg-brand-50 text-brand-600">
               <MessageSquare className="size-4" aria-hidden />

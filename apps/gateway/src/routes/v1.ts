@@ -22,6 +22,16 @@ import { resolveModelForRequest } from "../lib/policyRouter.js";
 import { computeCostMicros, getActivePricingVersion } from "../lib/pricing.js";
 import { enqueueUsage } from "../lib/queues.js";
 import { claimCoreTrace, type CoreTraceRecorder } from "../lib/coreTrace.js";
+import {
+  applyRetrievalContext,
+  lastUserQuery,
+  persistRetrievalRun,
+  publicRetrievalHits,
+  retrieveCustomerKnowledge,
+  RetrievalError,
+  clampMaxTokens,
+  type RetrievalResult,
+} from "../lib/retrieval.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { rateLimitMiddleware } from "../middleware/quota.js";
 import { bumpQuotaCache, quotaMiddleware } from "../middleware/quotaCheck.js";
@@ -122,7 +132,12 @@ v1Router.post(
     }
     const body = parsed.data;
     const messages = normalizeMessages(body.messages);
-    const estimatedTokens = Math.max(64, Math.ceil(messages.reduce((n, m) => n + m.content.length, 0) / 4)) + body.max_tokens;
+    const requestedKnowledgeBaseIds = body.metadata?.modelforge?.knowledge_base_ids ?? [];
+    const ragTopK = body.metadata?.modelforge?.rag_top_k ?? 4;
+    const estimatedTokens =
+      Math.max(64, Math.ceil(messages.reduce((n, m) => n + m.content.length, 0) / 4)) +
+      body.max_tokens +
+      (requestedKnowledgeBaseIds.length > 0 ? 1_024 : 0);
 
     let executionId: string | undefined;
     let reservedTokens = 0;
@@ -234,7 +249,35 @@ v1Router.post(
         },
       });
 
-      const inferenceMessages = routed.redactedMessages ?? messages;
+      let inferenceMessages = routed.redactedMessages ?? messages;
+      let retrieval: RetrievalResult | null = null;
+      if (requestedKnowledgeBaseIds.length > 0) {
+        const query = lastUserQuery(inferenceMessages);
+        retrieval = await retrieveCustomerKnowledge({
+          customerId: req.auth!.customerId,
+          query,
+          knowledgeBaseIds: requestedKnowledgeBaseIds,
+          topK: ragTopK,
+          contextLength: routed.hosted.contextLength,
+        });
+        inferenceMessages = applyRetrievalContext(
+          inferenceMessages,
+          retrieval.hits,
+          retrieval.mode,
+        );
+        await persistRetrievalRun({ requestId: execution.id, result: retrieval });
+        await coreTrace?.event({
+          phase: "retrieval",
+          kind: "knowledge.retrieved",
+          payload: {
+            knowledgeBaseIds: retrieval.knowledgeBaseIds,
+            topK: retrieval.topK,
+            hitCount: retrieval.hits.length,
+            titles: retrieval.hits.map((hit) => hit.documentTitle),
+          },
+        });
+      }
+
       const completionId = `chatcmpl_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
       const abortController = new AbortController();
       const cancelOnDisconnect = () => {
@@ -242,12 +285,18 @@ v1Router.post(
       };
       res.once("close", cancelOnDisconnect);
 
+      const completionTokensLimit = clampMaxTokens(
+        routed.hosted.contextLength,
+        inferenceMessages,
+        body.max_tokens,
+      );
+
       const stream = generateStream(
         {
           model_id: routed.resolvedModelSlug,
           messages: inferenceMessages,
           temperature: body.temperature,
-          max_tokens: body.max_tokens,
+          max_tokens: completionTokensLimit,
           top_p: body.top_p,
           stop_sequences: body.stop,
           stream: body.stream,
@@ -331,6 +380,9 @@ v1Router.post(
 
       res.setHeader("x-modelforge-request-id", execution.id);
       res.setHeader("x-modelforge-resolved-model", routed.resolvedModelSlug);
+      if (retrieval) {
+        res.setHeader("x-modelforge-retrieval-hits", String(retrieval.hits.length));
+      }
 
       try {
         if (body.stream) {
@@ -350,6 +402,18 @@ v1Router.post(
               }),
             ),
           );
+          if (retrieval) {
+            res.write(
+              toSse({
+                modelforge: {
+                  retrieval: {
+                    knowledge_base_ids: retrieval.knowledgeBaseIds,
+                    hits: publicRetrievalHits(retrieval.hits),
+                  },
+                },
+              }),
+            );
+          }
 
           for await (const chunk of stream) {
             promptTokens = chunk.prompt_tokens || promptTokens;
@@ -444,8 +508,8 @@ v1Router.post(
             costMicros,
             finishReason,
           });
-          res.json(
-            buildCompletionResponse({
+          res.json({
+            ...buildCompletionResponse({
               id: completionId,
               model: routed.resolvedModelSlug,
               content,
@@ -453,7 +517,17 @@ v1Router.post(
               promptTokens,
               completionTokens,
             }),
-          );
+            ...(retrieval
+              ? {
+                  modelforge: {
+                    retrieval: {
+                      knowledge_base_ids: retrieval.knowledgeBaseIds,
+                      hits: publicRetrievalHits(retrieval.hits),
+                    },
+                  },
+                }
+              : {}),
+          });
           return;
         }
 
@@ -520,6 +594,12 @@ v1Router.post(
           resolvedModelSlug: resolvedSlug,
           attemptNo: 1,
         }).catch(() => undefined);
+      }
+
+      if (err instanceof RetrievalError) {
+        return res.status(err.status).json({
+          error: { type: err.type, message: err.message },
+        });
       }
 
       if (err instanceof QuotaExceededError) {

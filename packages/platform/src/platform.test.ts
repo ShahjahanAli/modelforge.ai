@@ -6,12 +6,17 @@ import {
   LocalFileSigningProvider,
   LocalPiiProvider,
   canonicalStringify,
+  chunkText,
+  prepareKnowledgeChunks,
   computeCreditMicros,
   computeWindowStatus,
   cosineSimilarity,
   evaluateRoutingPolicy,
   hashCanonicalPayload,
+  lexicalOverlap,
+  rankChunks,
   simpleEmbed,
+  tokenize,
 } from "./index.js";
 
 const temporaryDirectories: string[] = [];
@@ -130,5 +135,81 @@ describe("RAG helpers", () => {
     expect(cosineSimilarity(source, related)).toBeGreaterThan(
       cosineSimilarity(source, unrelated),
     );
+  });
+
+  it("keeps Bangla tokens and ranks overlapping passages first", () => {
+    expect(tokenize("কিভাবে জমা দিব")).toEqual(["কিভাবে", "জমা", "দিব"]);
+    expect(lexicalOverlap("মূসক রিটার্ন", "মূসক রিটার্ন জমা দিতে হয়")).toBeGreaterThan(0.5);
+    const ranked = rankChunks("VAT return deadline", [
+      { content: "Banana harvest calendar for hill tracts." },
+      { content: "The VAT return deadline for this knowledge base is 15th of the following month." },
+    ]);
+    expect(ranked[0]?.content).toContain("VAT return");
+  });
+
+  it("chunks long text with optional overlap", () => {
+    const chunks = chunkText("alpha bravo charlie delta echo foxtrot", 18, 6);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.join(" ")).toContain("foxtrot");
+  });
+
+  it("drops overlapping sliding-window neighbors", () => {
+    const ranked = rankChunks(
+      "আয়কর কি",
+      [
+        { documentId: "faq", ordinal: 0, content: "### আয়কর কি?\nআয়কর অর্থ আয়কর আইনের অধীন কর।" },
+        { documentId: "faq", ordinal: 1, content: "আয়কর অর্থ আয়কর আইনের অধীন কর।\n### আয়কর কীভাবে পরিশোধ" },
+        { documentId: "other", ordinal: 0, content: "VAT is an indirect tax paid by the consumer." },
+      ],
+      { topK: 3, minScore: 0.01 },
+    );
+    expect(ranked.filter((chunk) => chunk.documentId === "faq")).toHaveLength(1);
+  });
+
+  it("chunks FAQ markdown as whole Q&A blocks", () => {
+    const chunks = prepareKnowledgeChunks(
+      "# FAQ\n\n### প্রশ্ন এক?\nউত্তর এক সম্পূর্ণ।\n\n### প্রশ্ন দুই?\nউত্তর দুই সম্পূর্ণ।\n\n### প্রশ্ন তিন?\nউত্তর তিন সম্পূর্ণ।",
+      800,
+    );
+    expect(chunks).toHaveLength(3);
+    expect(chunks[0]?.content).toContain("উত্তর এক সম্পূর্ণ");
+    expect(chunks[1]?.content).toContain("উত্তর দুই সম্পূর্ণ");
+  });
+
+  it("keeps distinct FAQ answers from the same document", () => {
+    const ranked = rankChunks(
+      "আয়কর কিভাবে জমা দিব?",
+      [
+        {
+          documentId: "faq",
+          ordinal: 0,
+          content: "### আয়কর নিবন্ধন কি?\nআয়কর আইন, ২০২৩ এর ধারা ১৬১ অনুসারে কোনো ব্যক্তি নিজেকে করদাতার হিসেবে নিবন্ধন করতে পারেন।",
+        },
+        {
+          documentId: "faq",
+          ordinal: 1,
+          content:
+            "### অনলাইনে রিটার্ন জমা দেবার প্রক্রিয়া কি?\nরিটার্ন জমা দেওয়ার ৭টি ধাপ রয়েছে, সেগুলি নিচে দেয়া হল-\ni) Assessment\nvii) Return view",
+        },
+        {
+          documentId: "faq",
+          ordinal: 2,
+          content:
+            "### আমি অনলাইনে রিটার্ন দাখিল করতে চাই। কিভাবে শুরু করব?\nhttps://etaxnbr.gov.bd এ User ID ও Password দিয়ে লগইন করুন।",
+        },
+        {
+          documentId: "faq",
+          ordinal: 3,
+          content:
+            "### অনলাইনে রিটার্ন দাখিলের পর সাপোর্টিং কাগজপত্র কোথায় জমা দিব বা কিভাবে attach করব?\nসাপোর্টিং ডকুমেন্টস অনলাইনে attach করতে হয়।",
+        },
+      ],
+      { topK: 4, minScore: 0.01 },
+    );
+    const top = ranked.slice(0, 2).map((chunk) => chunk.content).join("\n");
+    expect(top).toContain("৭টি ধাপ");
+    expect(top).toContain("কিভাবে শুরু করব");
+    expect(ranked[0]?.content).not.toContain("নিবন্ধন কি");
+    expect(ranked[0]?.content).not.toContain("সাপোর্টিং");
   });
 });

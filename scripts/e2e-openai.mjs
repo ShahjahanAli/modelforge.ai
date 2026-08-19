@@ -5,7 +5,7 @@ if (!apiKey) {
   throw new Error("Set MODELFORGE_API_KEY to a seeded or dashboard-created API key");
 }
 
-const baseURL = process.env.MODELFORGE_BASE_URL ?? "http://localhost:3000/v1";
+const baseURL = process.env.MODELFORGE_BASE_URL ?? "http://localhost:9000/v1";
 const model = process.env.MODELFORGE_TEST_MODEL ?? "zms-coder-7b";
 const client = new OpenAI({ apiKey, baseURL });
 

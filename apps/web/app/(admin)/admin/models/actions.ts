@@ -94,5 +94,48 @@ export async function grantModelToAllPlansAction(formData: FormData) {
     resourceId: modelId,
   });
   revalidatePath("/admin/models");
+  revalidatePath("/admin/infra");
   revalidatePath("/models");
+  revalidatePath("/chat");
+}
+
+export async function removeModelAction(modelId: string): Promise<{ ok: boolean; message: string }> {
+  const admin = await requireAdmin();
+  const slug = modelId.trim();
+  if (!slug) return { ok: false, message: "Model id required" };
+
+  try {
+    const result = (await gatewayFetch(`/internal/engine/models/${encodeURIComponent(slug)}`, {
+      method: "DELETE",
+    })) as { success?: boolean; message?: string; error?: string };
+
+    const ok = result.success !== false;
+    await writeAuditEvent({
+      actorType: "admin",
+      actorId: admin.id,
+      action: ok ? "model.remove" : "model.remove.failed",
+      resourceType: "HostedModel",
+      resourceId: slug,
+      metadata: { message: result.message ?? result.error ?? null },
+    });
+    revalidatePath("/admin/models");
+    revalidatePath("/admin/infra");
+    revalidatePath("/models");
+    revalidatePath("/chat");
+    return {
+      ok,
+      message: result.message ?? result.error ?? (ok ? "Model removed" : "Remove failed"),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Remove failed";
+    await writeAuditEvent({
+      actorType: "admin",
+      actorId: admin.id,
+      action: "model.remove.failed",
+      resourceType: "HostedModel",
+      resourceId: slug,
+      metadata: { message },
+    });
+    return { ok: false, message };
+  }
 }

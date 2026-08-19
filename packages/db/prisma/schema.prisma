@@ -254,8 +254,8 @@ model UsageEvent {
   customerId         String
   apiKey             ApiKey            @relation(fields: [apiKeyId], references: [id])
   apiKeyId           String
-  model              HostedModel       @relation(fields: [modelId], references: [id])
-  modelId            String
+  model              HostedModel?      @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  modelId            String?
   modelSlug          String
   promptTokens       Int
   completionTokens   Int
@@ -339,13 +339,13 @@ model InferenceRequest {
   apiKey             ApiKey              @relation(fields: [apiKeyId], references: [id])
   apiKeyId           String
   status             InferenceStatus     @default(QUEUED)
-  requestedModel     HostedModel?        @relation("RequestedModel", fields: [requestedModelId], references: [id])
+  requestedModel     HostedModel?        @relation("RequestedModel", fields: [requestedModelId], references: [id], onDelete: SetNull)
   requestedModelId   String?
   requestedModelSlug String
-  resolvedModel      HostedModel?        @relation("ResolvedModel", fields: [resolvedModelId], references: [id])
+  resolvedModel      HostedModel?        @relation("ResolvedModel", fields: [resolvedModelId], references: [id], onDelete: SetNull)
   resolvedModelId    String?
   resolvedModelSlug  String?
-  pricingVersion     PricingVersion?     @relation(fields: [pricingVersionId], references: [id])
+  pricingVersion     PricingVersion?     @relation(fields: [pricingVersionId], references: [id], onDelete: SetNull)
   pricingVersionId   String?
   policyVersionId    String?
   policyDecisionHash String?

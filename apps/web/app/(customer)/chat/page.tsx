@@ -13,7 +13,7 @@ export default async function ChatPage() {
       <PageHeader
         eyebrow="Playground"
         title="Chat"
-        description="Talk to the models on your plan through the same quota, policy, metering, and receipt pipeline as your API traffic."
+        description="Talk to the models on your plan. When a knowledge base is selected, answers come from your documents, not from the model's memory."
         actions={
           <Badge tone={models.length > 0 ? "ok" : "warn"} dot>
             {models.length > 0 ? `${models.length} model${models.length > 1 ? "s" : ""}` : "no models"}

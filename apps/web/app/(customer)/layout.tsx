@@ -4,7 +4,8 @@ import { authOptions } from "@/lib/auth";
 import { AppShell } from "@/components/shell/AppShell";
 import type { NavGroup } from "@/components/shell/SidebarNav";
 import { ChatWidget } from "@/components/chat/ChatWidget";
-import { chatModelsForSession } from "@/lib/chatModels";
+import { ChatSession } from "@/components/chat/ChatSession";
+import { chatKnowledgeBasesForSession, chatModelsForSession } from "@/lib/chatModels";
 
 export const dynamic = "force-dynamic";
 
@@ -64,16 +65,21 @@ export default async function CustomerLayout({ children }: { children: React.Rea
           operationsGroup,
         ]
       : [workspaceGroup, controlGroup];
-  const chatModels = await chatModelsForSession();
+  const [chatModels, knowledgeBases] = await Promise.all([
+    chatModelsForSession(),
+    chatKnowledgeBasesForSession(),
+  ]);
 
   return (
-    <AppShell
-      groups={groups}
-      email={session.user.email ?? "unknown"}
-      role={role}
-      overlay={role !== "ADMIN" ? <ChatWidget models={chatModels} /> : null}
-    >
-      {children}
-    </AppShell>
+    <ChatSession knowledgeBases={knowledgeBases}>
+      <AppShell
+        groups={groups}
+        email={session.user.email ?? "unknown"}
+        role={role}
+        overlay={role !== "ADMIN" ? <ChatWidget models={chatModels} /> : null}
+      >
+        {children}
+      </AppShell>
+    </ChatSession>
   );
 }

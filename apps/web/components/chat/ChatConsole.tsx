@@ -19,6 +19,7 @@ import {
   type ChatModelOption,
   type ChatStream,
 } from "./useChatStream";
+import { ChatMarkdown } from "./ChatMarkdown";
 
 interface ChatConsoleProps {
   models: ChatModelOption[];
@@ -31,6 +32,12 @@ const SUGGESTIONS = [
   "Write a TypeScript API example",
   "Summarize a technical concept",
   "Create a deployment checklist",
+];
+
+const GROUNDED_SUGGESTIONS = [
+  "What is in my knowledge base?",
+  "আমার নলেজ বেসে কী আছে?",
+  "What is the retrieval check code?",
 ];
 
 /**
@@ -84,19 +91,48 @@ function ReasoningBlock({
   );
 }
 
+const PIN_TO_BOTTOM_PX = 96;
+
 export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps) {
   const compact = variant === "widget";
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
-  const { messages, input, setInput, streaming, send, stop } = chat;
+  const pinnedToBottomRef = useRef(true);
+  const messageCountRef = useRef(0);
+  const { messages, input, setInput, streaming, send, stop, knowledgeBases, knowledgeBaseId } = chat;
   const disabled = models.length === 0;
+  const ragOn = knowledgeBaseId !== "off" && knowledgeBases.length > 0;
+  const suggestions = ragOn ? GROUNDED_SUGGESTIONS : SUGGESTIONS;
+
+  function isNearBottom(el: HTMLDivElement): boolean {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_TO_BOTTOM_PX;
+  }
+
+  function scrollToLatest(behavior: ScrollBehavior) {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }
+
+  function handleTranscriptScroll() {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const pinned = isNearBottom(el);
+    pinnedToBottomRef.current = pinned;
+    setShowJumpToLatest(!pinned && messages.length > 0);
+  }
 
   useEffect(() => {
-    transcriptRef.current?.scrollTo({
-      top: transcriptRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [messages]);
+    if (messages.length > messageCountRef.current) {
+      pinnedToBottomRef.current = true;
+      setShowJumpToLatest(false);
+    }
+    messageCountRef.current = messages.length;
+    if (!pinnedToBottomRef.current) return;
+    // Instant while tokens arrive so smooth animations cannot yank the viewport back.
+    scrollToLatest(streaming ? "auto" : "smooth");
+  }, [messages, streaming]);
 
   async function copyMessage(message: ChatMessage) {
     // Copy the answer only; the reasoning scratchpad is rarely what you want.
@@ -108,13 +144,15 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        ref={transcriptRef}
-        className={`min-h-0 flex-1 overflow-y-auto overscroll-contain bg-surface-0/40 ${
-          compact ? "px-3 py-4" : "px-4 py-5 sm:px-6"
-        }`}
-        aria-live="polite"
-      >
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={transcriptRef}
+          onScroll={handleTranscriptScroll}
+          className={`absolute inset-0 overflow-y-auto overscroll-contain bg-surface-0/40 ${
+            compact ? "px-3 py-4" : "px-4 py-5 sm:px-6"
+          }`}
+          aria-live="polite"
+        >
         {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-xl flex-col items-center justify-center text-center">
             <span className="grid size-11 place-items-center rounded-2xl border border-brand-200 bg-brand-50 text-brand-600 shadow-sm">
@@ -130,11 +168,13 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
             <p className="mt-2 max-w-md text-xs leading-6 text-content-muted sm:text-sm">
               {disabled
                 ? "No models are enabled on your plan yet. Ask an administrator to grant model access."
-                : "Ask questions, draft content, analyze code, or test a newly connected GGUF model. Responses stream directly from your private runtime."}
+                : ragOn
+                  ? "Ask in Bangla or English. Answers come from your knowledge base, not from the model's memory."
+                  : "Ask questions, draft content, analyze code, or test a newly connected GGUF model. Responses stream directly from your private runtime."}
             </p>
             {!disabled && (
               <div className={`mt-5 grid w-full gap-2 ${compact ? "" : "sm:grid-cols-2"}`}>
-                {(compact ? SUGGESTIONS.slice(0, 3) : SUGGESTIONS).map((prompt) => (
+                {(compact ? suggestions.slice(0, 3) : suggestions).map((prompt) => (
                   <button
                     key={prompt}
                     type="button"
@@ -169,7 +209,7 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
                   </span>
                 )}
                 <div
-                  className={`relative max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm leading-6 shadow-sm ${
+                  className={`relative max-w-[min(42rem,92%)] rounded-2xl px-3.5 py-3 text-sm leading-6 shadow-sm ${
                     message.role === "user"
                       ? "rounded-br-md bg-brand-600 text-white"
                       : message.error
@@ -186,9 +226,12 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
                           hasAnswer={Boolean(answer)}
                         />
                       )}
-                      {answer && (
-                        <div className="whitespace-pre-wrap break-words">{answer}</div>
-                      )}
+                      {answer &&
+                        (message.role === "assistant" && !message.error ? (
+                          <ChatMarkdown text={answer} />
+                        ) : (
+                          <div className="whitespace-pre-wrap break-words">{answer}</div>
+                        ))}
                     </div>
                   ) : (
                     <span className="flex items-center gap-1 py-1 text-content-muted">
@@ -216,6 +259,20 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
                       </button>
                     </div>
                   )}
+                  {message.role === "assistant" && message.sources && message.sources.length > 0 && (
+                    <div className="mt-2 space-y-1 text-[11px] leading-5 text-content-muted">
+                      <p>
+                        Source
+                        {message.sources.length === 1 ? "" : "s"}:{" "}
+                        {message.sources.map((source) => source.title).join(" · ")}
+                      </p>
+                      {message.sources[0]?.excerpt && (
+                        <p className="line-clamp-2 text-[10px] text-content-muted/80">
+                          {message.sources[0].excerpt}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {message.role === "user" && !compact && (
                   <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-line-strong bg-surface-2 text-content-secondary">
@@ -226,6 +283,21 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
               );
             })}
           </div>
+        )}
+      </div>
+        {showJumpToLatest && (
+          <button
+            type="button"
+            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line-strong bg-surface-1 px-3 py-1.5 text-xs font-medium text-content-secondary shadow-sm hover:bg-surface-2"
+            onClick={() => {
+              pinnedToBottomRef.current = true;
+              setShowJumpToLatest(false);
+              scrollToLatest("smooth");
+            }}
+          >
+            <ChevronDown className="size-3.5" aria-hidden />
+            Latest
+          </button>
         )}
       </div>
 

@@ -64,7 +64,7 @@ export async function POST(request: Request) {
 
   try {
     const rawKey = await dashboardApiKey(customerId);
-    const base = process.env.GATEWAY_INTERNAL_URL ?? "http://localhost:3000";
+    const base = process.env.GATEWAY_INTERNAL_URL ?? "http://localhost:9000";
     const upstream = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
       headers: {
@@ -90,7 +90,12 @@ export async function POST(request: Request) {
       connection: "keep-alive",
       "x-accel-buffering": "no",
     });
-    for (const name of ["x-request-id", "x-modelforge-request-id", "x-modelforge-resolved-model"]) {
+    for (const name of [
+      "x-request-id",
+      "x-modelforge-request-id",
+      "x-modelforge-resolved-model",
+      "x-modelforge-retrieval-hits",
+    ]) {
       const value = upstream.headers.get(name);
       if (value) headers.set(name, value);
     }

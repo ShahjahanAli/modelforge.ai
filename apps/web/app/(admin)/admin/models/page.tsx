@@ -6,6 +6,7 @@ import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { HuggingFaceBrowser } from "@/components/admin/HuggingFaceBrowser";
+import { RemoveModelButton } from "@/components/admin/RemoveModelButton";
 import {
   grantModelToAllPlansAction,
   registerDiscoveredAction,
@@ -227,7 +228,10 @@ export default async function AdminModelsPage() {
       </Panel>
 
       <Panel>
-        <PanelHeader title="Registered models" description={`${models.length} total`} />
+        <PanelHeader
+          title="Registered models"
+          description={`${models.length} total. Inactive means not loaded into RAM — use Remove to drop a model from the catalog and chat picker.`}
+        />
         {models.length === 0 ? (
           <EmptyState icon={Cpu} title="No models registered yet" />
         ) : (
@@ -242,6 +246,7 @@ export default async function AdminModelsPage() {
                   <th className="text-right">Pricing ¢/M</th>
                   <th>Status</th>
                   <th>Plan access</th>
+                  <th className="text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -277,6 +282,14 @@ export default async function AdminModelsPage() {
                           </button>
                         </form>
                       )}
+                    </td>
+                    <td className="text-right">
+                      <RemoveModelButton
+                        modelId={model.modelId}
+                        displayName={model.displayName}
+                        weightsPath={model.weightsPath}
+                        status={model.status}
+                      />
                     </td>
                   </tr>
                 ))}

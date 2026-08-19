@@ -264,6 +264,10 @@ export function ModelPoolControls({
               const job = jobs[model.modelId];
               const live = residentById.get(model.modelId);
               const isResident = Boolean(live);
+              // Pool residency is the operational source of truth. Reconciliation
+              // persists this too, but never show a stale LOADED badge between polls.
+              const effectiveStatus =
+                isResident ? "LOADED" : model.status === "LOADED" ? "INACTIVE" : model.status;
               const size = formatSize(model.sizeBytes);
 
               return (
@@ -275,9 +279,11 @@ export function ModelPoolControls({
                       {size && <span className="text-[11px] text-content-muted">{size}</span>}
                     </div>
                   </td>
-                  <td className="text-right font-mono tabular-nums">{model.nThreads}</td>
+                  <td className="w-20 text-right align-top font-mono tabular-nums">
+                    {model.nThreads}
+                  </td>
                   <td>
-                    <StatusBadge status={model.status} />
+                    <StatusBadge status={effectiveStatus} />
                   </td>
                   <td>
                     <Badge tone={isResident ? "ok" : "neutral"} dot pulse={isResident}>

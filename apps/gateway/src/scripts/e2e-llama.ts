@@ -9,7 +9,7 @@ import { prisma } from "@modelforge/db";
 import { generateApiKey } from "../lib/keys.js";
 import { scanWeights } from "../lib/weights.js";
 
-const base = process.env.GATEWAY_BASE_URL ?? `http://localhost:${process.env.GATEWAY_PORT ?? 3000}`;
+const base = process.env.GATEWAY_BASE_URL ?? `http://localhost:${process.env.GATEWAY_PORT ?? 9000}`;
 const internalToken = process.env.INTERNAL_SERVICE_TOKEN ?? "";
 
 function log(step: string, detail = "") {

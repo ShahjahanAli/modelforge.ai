@@ -490,7 +490,7 @@ mod tests {
     fn test_pool(budget_mb: u64) -> ModelPool {
         ModelPool::new(AppConfig {
             server: ServerConfig {
-                grpc_port: 50051,
+                grpc_port: 9002,
                 total_ram_budget_mb: budget_mb,
             },
             models: ModelsConfig {

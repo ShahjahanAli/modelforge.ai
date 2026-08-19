@@ -11,17 +11,50 @@ export async function generateInvoice(
 ) {
   const events = await prisma.usageEvent.findMany({
     where: { customerId, createdAt: { gte: periodStart, lt: periodEnd } },
-    include: { model: true },
+    include: {
+      model: true,
+      inferenceRequest: {
+        select: {
+          costMicros: true,
+          pricingVersion: {
+            select: {
+              pricePerMTokIn: true,
+              pricePerMTokOut: true,
+            },
+          },
+        },
+      },
+    },
   });
 
-  const amountCents = calculateUsageCents(
-    events.map((e) => ({
-      promptTokens: e.promptTokens,
-      completionTokens: e.completionTokens,
-      pricePerMTokIn: e.model.pricePerMTokIn,
-      pricePerMTokOut: e.model.pricePerMTokOut,
-    })),
+  const amountFromRequests = events.reduce((sum, event) => {
+    const micros = event.inferenceRequest?.costMicros;
+    return micros ? sum + Number(micros / 10_000n) : sum;
+  }, 0);
+
+  const amountFromRates = calculateUsageCents(
+    events
+      .map((event) => {
+        const priced =
+          event.inferenceRequest?.pricingVersion ??
+          (event.model
+            ? {
+                pricePerMTokIn: event.model.pricePerMTokIn,
+                pricePerMTokOut: event.model.pricePerMTokOut,
+              }
+            : null);
+        if (!priced) return null;
+        return {
+          promptTokens: event.promptTokens,
+          completionTokens: event.completionTokens,
+          pricePerMTokIn: priced.pricePerMTokIn,
+          pricePerMTokOut: priced.pricePerMTokOut,
+        };
+      })
+      .filter((line): line is NonNullable<typeof line> => line !== null),
   );
+
+  const amountCents = amountFromRequests > 0 ? amountFromRequests : amountFromRates;
 
   return prisma.invoice.upsert({
     where: {

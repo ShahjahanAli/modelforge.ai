@@ -1,5 +1,5 @@
 [server]
-grpc_port = 50051
+grpc_port = 9002
 total_ram_budget_mb = 24000
 
 [models]

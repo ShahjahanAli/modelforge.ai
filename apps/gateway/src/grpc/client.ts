@@ -75,7 +75,7 @@ function protoPath(): string {
   );
 }
 
-export function getInferenceClient(url = process.env.INFERENCE_ENGINE_GRPC_URL ?? "localhost:50051") {
+export function getInferenceClient(url = process.env.INFERENCE_ENGINE_GRPC_URL ?? "localhost:9002") {
   if (client) return client;
   const packageDef = protoLoader.loadSync(protoPath(), {
     keepCase: true,

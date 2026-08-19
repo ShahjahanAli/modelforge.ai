@@ -1,7 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { prisma } from "../packages/db/dist/index.js";
 
-const gateway = process.env.GATEWAY_INTERNAL_URL ?? "http://localhost:3000";
+const gateway = process.env.GATEWAY_INTERNAL_URL ?? "http://localhost:9000";
 const serviceToken = process.env.INTERNAL_SERVICE_TOKEN;
 if (!serviceToken) throw new Error("INTERNAL_SERVICE_TOKEN is required");
 

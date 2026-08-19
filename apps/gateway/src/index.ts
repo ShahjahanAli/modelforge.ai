@@ -6,6 +6,8 @@ import { loadEnv } from "./lib/env.js";
 import { ensureLocalNode } from "./lib/modernJobs.js";
 import { ensureSigningKey } from "./lib/receipts.js";
 import { hydrateArmedCoreTraces } from "./lib/coreTrace.js";
+import { restoreHuggingFaceDownloads } from "./lib/huggingFace.js";
+import { reconcileModelRegistry, shutdownEngine } from "./engine/index.js";
 import { internalRouter } from "./routes/internal.js";
 import { v1Router } from "./routes/v1.js";
 
@@ -46,20 +48,32 @@ const server = app.listen(env.GATEWAY_PORT, async () => {
       : "Redis disabled (in-memory rate limits + direct Postgres usage writes)",
   );
   try {
+    const resumedDownloads = await restoreHuggingFaceDownloads();
+    await reconcileModelRegistry();
     await ensureLocalNode();
     await ensureSigningKey();
     const armedTraces = await hydrateArmedCoreTraces();
-    console.log(`Local node + signing key ready (${armedTraces} diagnostic trace(s) armed)`);
+    console.log(
+      `Local node + signing key ready (${armedTraces} diagnostic trace(s) armed${
+        resumedDownloads ? `, ${resumedDownloads} Hub download(s) resumed` : ""
+      })`,
+    );
   } catch (error) {
     console.warn("Modern platform bootstrap deferred:", error);
   }
 });
 
-function shutdown() {
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log("Shutting down gateway...");
+  await shutdownEngine().catch((error: unknown) => {
+    console.warn("Engine shutdown was incomplete:", error);
+  });
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 10_000).unref();
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());

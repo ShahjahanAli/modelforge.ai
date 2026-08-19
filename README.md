@@ -260,17 +260,21 @@ pnpm db:seed
 pnpm llama:fetch
 
 # 6. Start the gateway and control plane
+# Frees GATEWAY_PORT / WEB_PORT / GRPC_PORT first if something is still bound
 pnpm dev
 ```
 
 Before step 4, update `.env` with secure local values and set
-`MODEL_WEIGHTS_DIR` to an **absolute path**.
+`MODEL_WEIGHTS_DIR` to an **absolute path**. Ports default to the **9000 series**
+(`9000` gateway, `9001` web, `9002` gRPC, `9100+` llama-server) so they do not
+collide with typical Next.js (`3000`), Express, or Laravel (`8000`) apps. Override
+with `GATEWAY_PORT` / `WEB_PORT` in `.env`, or free them alone via `pnpm ports:free`.
 
 | Service | Local URL |
 |---|---|
-| Control plane | <http://localhost:3001> |
-| OpenAI API | <http://localhost:3000/v1> |
-| Gateway health | <http://localhost:3000/healthz> |
+| Control plane | <http://localhost:9001> |
+| OpenAI API | <http://localhost:9000/v1> |
+| Gateway health | <http://localhost:9000/healthz> |
 
 ### Development seed accounts
 
@@ -346,7 +350,7 @@ shown separately, and Copy exports the answer only.
 ### cURL
 
 ```bash
-curl http://localhost:3000/v1/chat/completions \
+curl http://localhost:9000/v1/chat/completions \
   -H "Authorization: Bearer mf_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -368,7 +372,7 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.MODELFORGE_API_KEY,
-  baseURL: "http://localhost:3000/v1",
+  baseURL: "http://localhost:9000/v1",
 });
 
 const response = await client.chat.completions.create({
@@ -422,6 +426,9 @@ Copy `.env.example` to `.env`. The most important settings are:
 | `DATABASE_URL` | PostgreSQL connection string |
 | `REDIS_ENABLED` | Enables Redis-backed rate limits and BullMQ workers |
 | `REDIS_URL` | Redis connection string |
+| `GATEWAY_PORT` | Express API gateway (default `9000`) |
+| `WEB_PORT` | Next.js control plane (default `9001`) |
+| `GRPC_PORT` | Optional Rust inference gRPC (default `9002`) |
 | `MODEL_WEIGHTS_DIR` | Absolute path to local GGUF storage |
 | `HF_TOKEN` | Optional read-only token for private or gated Hugging Face repositories |
 | `HF_MAX_CONCURRENT_DOWNLOADS` | Concurrent host-side Hub downloads (default `2`) |

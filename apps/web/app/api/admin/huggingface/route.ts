@@ -55,15 +55,20 @@ export async function POST(request: Request) {
   const admin = await adminUser();
   if (!admin) return NextResponse.json({ error: "Admin session required" }, { status: 401 });
   try {
-    const input = (await request.json()) as { repoId?: string; filePath?: string };
-    const download = (await gatewayFetch("/internal/huggingface/downloads", {
-      method: "POST",
-      body: JSON.stringify(input),
-    })) as { id: string };
+    const input = (await request.json()) as { repoId?: string; filePath?: string; retryId?: string };
+    const download = input.retryId
+      ? ((await gatewayFetch(`/internal/huggingface/downloads/${encodeURIComponent(input.retryId)}/retry`, {
+          method: "POST",
+          body: "{}",
+        })) as { id: string })
+      : ((await gatewayFetch("/internal/huggingface/downloads", {
+          method: "POST",
+          body: JSON.stringify(input),
+        })) as { id: string });
     await writeAuditEvent({
       actorType: "admin",
       actorId: admin.id,
-      action: "model.huggingface_download_started",
+      action: input.retryId ? "model.huggingface_download_retried" : "model.huggingface_download_started",
       resourceType: "HuggingFaceDownload",
       resourceId: download.id,
       metadata: { repoId: input.repoId ?? null, filePath: input.filePath ?? null },

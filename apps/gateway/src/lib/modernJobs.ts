@@ -146,7 +146,7 @@ export async function ingestTextDocument(input: {
   title: string;
   content: string;
 }) {
-  const { chunkText, simpleEmbed } = await import("@modelforge/platform");
+  const { prepareKnowledgeChunks } = await import("@modelforge/platform");
   const checksum = createHash("sha256").update(input.content).digest("hex");
   const document = await prisma.knowledgeDocument.create({
     data: {
@@ -165,16 +165,16 @@ export async function ingestTextDocument(input: {
       byteSize: Buffer.byteLength(input.content),
     },
   });
-  const chunks = chunkText(input.content, 2_000);
-  for (const [ordinal, content] of chunks.entries()) {
-    await prisma.knowledgeChunk.create({
-      data: {
+  const chunks = prepareKnowledgeChunks(input.content, 800);
+  if (chunks.length > 0) {
+    await prisma.knowledgeChunk.createMany({
+      data: chunks.map((chunk) => ({
         versionId: version.id,
-        ordinal,
-        content,
-        tokenCount: Math.ceil(content.length / 4),
-        embedding: simpleEmbed(content),
-      },
+        ordinal: chunk.ordinal,
+        content: chunk.content,
+        tokenCount: chunk.tokenCount,
+        embedding: chunk.embedding,
+      })),
     });
   }
   await prisma.knowledgeDocument.update({

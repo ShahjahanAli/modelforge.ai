@@ -5,10 +5,11 @@ import { Badge } from "@/components/ui/Badge";
 import { Panel, PanelHeader } from "@/components/ui/Panel";
 import { ChatConsole } from "./ChatConsole";
 import { ChatSettings } from "./ChatSettings";
-import { useChatStream, type ChatModelOption } from "./useChatStream";
+import { useChatSession } from "./ChatSession";
+import type { ChatModelOption } from "./useChatStream";
 
 export function ChatWorkspace({ models }: { models: ChatModelOption[] }) {
-  const chat = useChatStream();
+  const chat = useChatSession();
 
   return (
     <Panel className="overflow-hidden">

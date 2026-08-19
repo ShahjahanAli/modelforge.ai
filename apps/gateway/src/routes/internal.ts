@@ -1,4 +1,5 @@
 import { Router } from "express";
+import path from "node:path";
 import { prisma } from "@modelforge/db";
 import { createPaymentAdapter, generateInvoice } from "@modelforge/billing";
 import { generateApiKey } from "../lib/keys.js";
@@ -10,7 +11,7 @@ import {
   loadModel,
   unloadModel,
 } from "../engine/index.js";
-import { scanWeights, weightsDir } from "../lib/weights.js";
+import { scanWeights, weightsDir, deleteRegisteredWeights } from "../lib/weights.js";
 import { armCoreTrace, disarmCoreTrace } from "../lib/coreTrace.js";
 import {
   cancelHuggingFaceDownload,
@@ -18,12 +19,20 @@ import {
   listHuggingFaceDownloads,
   listHuggingFaceGgufFiles,
   removeHuggingFaceDownload,
+  retryHuggingFaceDownload,
   searchHuggingFaceModels,
   startHuggingFaceDownload,
 } from "../lib/huggingFace.js";
 
 export const internalRouter = Router();
 internalRouter.use(internalAuth);
+
+function normalizedWeightPath(value: string): string {
+  const root = weightsDir();
+  const relative = path.isAbsolute(value) ? path.relative(root, value) : value;
+  const normalized = relative.replaceAll("\\", "/").replace(/^\.\/+/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
 
 internalRouter.get("/huggingface/search", async (req, res) => {
   try {
@@ -72,6 +81,14 @@ internalRouter.post("/huggingface/downloads", async (req, res) => {
     res.status(202).json(download);
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Download failed to start" });
+  }
+});
+
+internalRouter.post("/huggingface/downloads/:id/retry", async (req, res) => {
+  try {
+    res.status(202).json(await retryHuggingFaceDownload(req.params.id!));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Retry failed" });
   }
 });
 
@@ -206,12 +223,14 @@ internalRouter.get("/engine/models/available", async (_req, res) => {
       scanWeights(),
       prisma.hostedModel.findMany({ select: { modelId: true, weightsPath: true } }),
     ]);
-    const byPath = new Map(registered.map((row) => [row.weightsPath, row.modelId]));
+    const byPath = new Map(
+      registered.map((row) => [normalizedWeightPath(row.weightsPath), row.modelId]),
+    );
     res.json({
       weightsDir: weightsDir(),
       files: files.map((file) => ({
         ...file,
-        registeredAs: byPath.get(file.relativePath) ?? null,
+        registeredAs: byPath.get(normalizedWeightPath(file.relativePath)) ?? null,
       })),
     });
   } catch (err) {
@@ -329,6 +348,63 @@ internalRouter.post("/engine/models/:modelId/unload", async (req, res) => {
       error: err instanceof Error ? err.message : "unload failed",
     });
   }
+});
+
+internalRouter.delete("/engine/models/:modelId", async (req, res) => {
+  const modelId = req.params.modelId!;
+  const hosted = await prisma.hostedModel.findUnique({ where: { modelId } });
+  if (!hosted) {
+    return res.status(404).json({ error: { type: "model_not_found", message: "Unknown model" } });
+  }
+
+  try {
+    await unloadModel(modelId);
+  } catch (err) {
+    return res.status(503).json({
+      success: false,
+      error: err instanceof Error ? err.message : "unload failed",
+    });
+  }
+
+  const plans = await prisma.plan.findMany({ select: { id: true, allowedModelIds: true } });
+  await Promise.all(
+    plans
+      .filter((plan) => plan.allowedModelIds.includes(modelId))
+      .map((plan) =>
+        prisma.plan.update({
+          where: { id: plan.id },
+          data: { allowedModelIds: plan.allowedModelIds.filter((id) => id !== modelId) },
+        }),
+      ),
+  );
+  await prisma.planModelEntitlement.deleteMany({ where: { modelSlug: modelId } });
+
+  const others = await prisma.hostedModel.count({
+    where: { id: { not: hosted.id }, weightsPath: hosted.weightsPath },
+  });
+  const weightsPath = hosted.weightsPath;
+  await prisma.hostedModel.delete({ where: { id: hosted.id } });
+
+  let deletedFiles: string[] = [];
+  let fileError: string | undefined;
+  if (others === 0) {
+    try {
+      deletedFiles = await deleteRegisteredWeights(weightsPath);
+    } catch (err) {
+      fileError = err instanceof Error ? err.message : "failed to delete weights";
+    }
+  }
+
+  res.json({
+    success: true,
+    modelId,
+    deletedFiles,
+    message: fileError
+      ? `Model removed from the registry, but weights were not deleted: ${fileError}`
+      : deletedFiles.length
+        ? "Model removed from the registry and weights deleted"
+        : "Model removed from the registry",
+  });
 });
 
 internalRouter.post("/invoices/generate", async (req, res) => {

@@ -1,5 +1,5 @@
 import { prisma } from "@modelforge/db";
-import { BookOpen } from "lucide-react";
+import { BookOpen, Trash2 } from "lucide-react";
 import { requireSession } from "@/lib/session";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
@@ -7,6 +7,8 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Badge } from "@/components/ui/Badge";
 import {
   createKnowledgeBaseAction,
+  deleteKnowledgeBaseAction,
+  deleteKnowledgeDocumentAction,
   ingestKnowledgeDocumentAction,
 } from "./actions";
 
@@ -16,7 +18,12 @@ export default async function KnowledgePage() {
   const user = await requireSession();
   const bases = await prisma.knowledgeBase.findMany({
     where: user.role === "ADMIN" ? {} : { customerId: user.id },
-    include: { documents: true },
+    include: {
+      documents: {
+        orderBy: { createdAt: "desc" },
+        include: { versions: { select: { _count: { select: { chunks: true } } } } },
+      },
+    },
     orderBy: { updatedAt: "desc" },
   });
 
@@ -25,7 +32,7 @@ export default async function KnowledgePage() {
       <PageHeader
         eyebrow="Memory"
         title="Knowledge bases"
-        description="Tenant-scoped documents, chunking, embeddings, and retrieval with cost attribution."
+        description="Ingest documents here. Chat retrieves matching passages and answers only from those passages."
       />
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -48,9 +55,9 @@ export default async function KnowledgePage() {
           </PanelBody>
         </Panel>
         <Panel>
-          <PanelHeader title="Ingest text document" />
+          <PanelHeader title="Ingest document" />
           <PanelBody>
-            <form action={ingestKnowledgeDocumentAction} className="space-y-3">
+            <form action={ingestKnowledgeDocumentAction} className="space-y-3" encType="multipart/form-data">
               <label className="block">
                 <span className="field-label">Knowledge base</span>
                 <select className="input" name="knowledgeBaseId" required>
@@ -63,11 +70,15 @@ export default async function KnowledgePage() {
               </label>
               <label className="block">
                 <span className="field-label">Title</span>
-                <input className="input" name="title" required />
+                <input className="input" name="title" placeholder="Optional when uploading a file" />
               </label>
               <label className="block">
-                <span className="field-label">Content</span>
-                <textarea className="input min-h-32" name="content" required />
+                <span className="field-label">Paste text</span>
+                <textarea className="input min-h-32" name="content" />
+              </label>
+              <label className="block">
+                <span className="field-label">Or upload .txt / .md / .csv</span>
+                <input className="input" type="file" name="file" accept=".txt,.md,.csv,text/plain,text/markdown,text/csv" />
               </label>
               <button className="btn" type="submit" disabled={bases.length === 0}>
                 Ingest
@@ -83,32 +94,80 @@ export default async function KnowledgePage() {
           <EmptyState
             icon={BookOpen}
             title="No knowledge bases"
-            description="Create a knowledge base to ingest documents for grounded completions."
+            description="Create a knowledge base and ingest documents. Chat will then answer only from those documents."
           />
         ) : (
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Sensitivity</th>
-                  <th className="text-right">Documents</th>
-                  <th className="text-right">Retention</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bases.map((base) => (
-                  <tr key={base.id}>
-                    <td className="font-medium">{base.name}</td>
-                    <td>
+          <div className="space-y-6 p-4">
+            {bases.map((base) => {
+              const documentCount = base.documents.length;
+              const chunkCount = base.documents.reduce(
+                (sum, document) =>
+                  sum + document.versions.reduce((inner, version) => inner + version._count.chunks, 0),
+                0,
+              );
+              return (
+                <article key={base.id} className="rounded-xl border border-line bg-surface-1">
+                  <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-4 py-3">
+                    <div>
+                      <h3 className="font-medium text-content-primary">{base.name}</h3>
+                      <p className="mt-1 text-xs text-content-muted">
+                        {base.description || "No description"} · {documentCount} document
+                        {documentCount === 1 ? "" : "s"} · {chunkCount} chunks
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
                       <Badge tone="info">{base.sensitivity}</Badge>
-                    </td>
-                    <td className="text-right font-mono">{base.documents.length}</td>
-                    <td className="text-right font-mono">{base.retentionDays}d</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <form action={deleteKnowledgeBaseAction}>
+                        <input type="hidden" name="knowledgeBaseId" value={base.id} />
+                        <button className="btn-ghost" type="submit" title="Delete knowledge base">
+                          <Trash2 className="size-4" aria-hidden />
+                          Delete
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                  {base.documents.length === 0 ? (
+                    <p className="px-4 py-3 text-sm text-content-muted">No documents yet. Ingest text to ground chat.</p>
+                  ) : (
+                    <div className="table-scroll">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Document</th>
+                            <th>Status</th>
+                            <th className="text-right">Chunks</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {base.documents.map((document) => (
+                            <tr key={document.id}>
+                              <td className="font-medium">{document.title}</td>
+                              <td>
+                                <Badge tone={document.status === "SUCCEEDED" ? "ok" : "warn"}>
+                                  {document.status}
+                                </Badge>
+                              </td>
+                              <td className="text-right font-mono">
+                                {document.versions.reduce((sum, version) => sum + version._count.chunks, 0)}
+                              </td>
+                              <td className="text-right">
+                                <form action={deleteKnowledgeDocumentAction}>
+                                  <input type="hidden" name="documentId" value={document.id} />
+                                  <button className="btn-ghost" type="submit" title="Delete document">
+                                    <Trash2 className="size-3.5" aria-hidden />
+                                  </button>
+                                </form>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </div>
         )}
       </Panel>

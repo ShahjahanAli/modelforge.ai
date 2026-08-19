@@ -42,7 +42,8 @@ export const modelforgeControlsSchema = z
     max_latency_ms: z.number().int().positive().optional(),
     min_quality: z.number().int().min(0).max(100).optional(),
     prefer_local: z.boolean().optional(),
-    knowledge_base_ids: z.array(z.string()).optional(),
+    knowledge_base_ids: z.array(z.string().min(1)).max(20).optional(),
+    rag_top_k: z.number().int().min(1).max(12).optional(),
     hedge: z.boolean().optional(),
     /** Optional one-shot diagnostic session created by the control plane. */
     trace_session_id: z.string().min(1).optional(),

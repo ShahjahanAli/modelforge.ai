@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.27.0",
   "scripts": {
-    "dev": "dotenv -e .env -- turbo run dev --parallel",
+    "ports:free": "dotenv -e .env -- node scripts/free-ports.mjs",
+    "dev": "dotenv -e .env -- node scripts/free-ports.mjs && dotenv -e .env -- turbo run dev --parallel",
     "build": "dotenv -e .env -- turbo run build",
     "lint": "dotenv -e .env -- turbo run lint",
     "typecheck": "dotenv -e .env -- turbo run typecheck",

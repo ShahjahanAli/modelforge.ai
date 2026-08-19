@@ -19,6 +19,18 @@ describe("chatCompletionRequestSchema", () => {
     expect(parsed.max_tokens).toBe(4096);
   });
 
+  it("accepts knowledge-base retrieval controls", () => {
+    const parsed = chatCompletionRequestSchema.parse({
+      model: "auto",
+      messages: [{ role: "user", content: "hello" }],
+      metadata: {
+        modelforge: { knowledge_base_ids: ["kb_1"], rag_top_k: 4 },
+      },
+    });
+    expect(parsed.metadata?.modelforge?.knowledge_base_ids).toEqual(["kb_1"]);
+    expect(parsed.metadata?.modelforge?.rag_top_k).toBe(4);
+  });
+
   it("rejects empty messages", () => {
     expect(() =>
       chatCompletionRequestSchema.parse({

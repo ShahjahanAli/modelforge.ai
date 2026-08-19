@@ -6,7 +6,7 @@
  *   pnpm engine:status <model-slug>    # also load that model
  *   pnpm engine:status <slug> --unload
  */
-const base = process.env.GATEWAY_INTERNAL_URL ?? "http://localhost:3000";
+const base = process.env.GATEWAY_INTERNAL_URL ?? "http://localhost:9000";
 const token = process.env.INTERNAL_SERVICE_TOKEN;
 
 if (!token) {

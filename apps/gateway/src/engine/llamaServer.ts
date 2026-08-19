@@ -37,6 +37,19 @@ const modelLoadLocks = new Map<
   Promise<{ success: boolean; message: string; ram_used_mb: number }>
 >();
 
+async function setRegistryStatus(
+  modelId: string,
+  status: "INACTIVE" | "LOADED" | "ERROR",
+): Promise<void> {
+  // Engine-only tests can run without the application database.
+  if (!process.env.DATABASE_URL) return;
+  await prisma.hostedModel
+    .updateMany({ where: { modelId }, data: { status } })
+    .catch((error: unknown) => {
+      console.warn(`Could not set registry status for ${modelId} to ${status}:`, error);
+    });
+}
+
 export function isModelProtectedFromEviction(modelId: string): boolean {
   const protectedModels = (process.env.MODELFORGE_PROTECTED_MODELS ?? "")
     .split(",")
@@ -99,7 +112,7 @@ function usedRamMb(): number {
 }
 
 async function freePort(): Promise<number> {
-  const base = Number(process.env.LLAMA_SERVER_PORT_BASE ?? 8100);
+  const base = Number(process.env.LLAMA_SERVER_PORT_BASE ?? 9100);
   for (let candidate = base; candidate < base + 200; candidate += 1) {
     const taken = [...instances.values()].some((i) => i.port === candidate);
     if (taken) continue;
@@ -262,7 +275,14 @@ async function loadModelUnlocked(req: {
     if (instance.stderrTail.length > 40) instance.stderrTail.shift();
   });
   child.stdout?.resume();
-  child.once("exit", () => instances.delete(req.model_id));
+  child.once("exit", () => {
+    // unloadModel removes the instance first; if it is still present, the child
+    // exited unexpectedly and the persisted registry must not remain LOADED.
+    if (instances.get(req.model_id) === instance) {
+      instances.delete(req.model_id);
+      void setRegistryStatus(req.model_id, "ERROR");
+    }
+  });
 
   instances.set(req.model_id, instance);
 
@@ -274,9 +294,11 @@ async function loadModelUnlocked(req: {
   } catch (err) {
     child.kill();
     instances.delete(req.model_id);
+    await setRegistryStatus(req.model_id, "ERROR");
     throw err;
   }
 
+  await setRegistryStatus(req.model_id, "LOADED");
   return { success: true, message: `listening on 127.0.0.1:${port}`, ram_used_mb: ramMb };
 }
 
@@ -300,7 +322,10 @@ export function loadModel(req: {
 
 export async function unloadModel(model_id: string): Promise<{ success: boolean; message: string }> {
   const instance = instances.get(model_id);
-  if (!instance) return { success: true, message: "not loaded" };
+  if (!instance) {
+    await setRegistryStatus(model_id, "INACTIVE");
+    return { success: true, message: "not loaded" };
+  }
 
   instances.delete(model_id);
   await new Promise<void>((resolve) => {
@@ -311,6 +336,7 @@ export async function unloadModel(model_id: string): Promise<{ success: boolean;
       resolve();
     }, 5000);
   });
+  await setRegistryStatus(model_id, "INACTIVE");
   return { success: true, message: "unloaded" };
 }
 
@@ -390,10 +416,6 @@ async function ensureLoaded(modelId: string): Promise<Instance> {
     quantization: hosted.quantization,
     use_mmap: process.env.USE_MMAP !== "false",
   });
-  await prisma.hostedModel
-    .update({ where: { id: hosted.id }, data: { status: "LOADED" } })
-    .catch(() => undefined);
-
   const loaded = instances.get(modelId);
   if (!loaded) throw new EngineError("INTERNAL", `Model ${modelId} vanished after load`);
   return loaded;
@@ -567,10 +589,4 @@ export function mapEngineFailure(err: unknown): { code: string; message: string 
 
 export async function shutdownAll(): Promise<void> {
   await Promise.all([...instances.keys()].map((modelId) => unloadModel(modelId)));
-}
-
-for (const signal of ["SIGINT", "SIGTERM", "beforeExit"] as const) {
-  process.once(signal, () => {
-    for (const instance of instances.values()) instance.child.kill();
-  });
 }

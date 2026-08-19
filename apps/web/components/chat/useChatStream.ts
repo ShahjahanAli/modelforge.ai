@@ -1,10 +1,23 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface ChatModelOption {
   id: string;
   name: string;
+}
+
+export interface KnowledgeBaseOption {
+  id: string;
+  name: string;
+  documentCount: number;
+}
+
+export interface RetrievalHit {
+  title: string;
+  knowledge_base: string;
+  score: number;
+  excerpt?: string;
 }
 
 export interface ChatMessage {
@@ -13,7 +26,23 @@ export interface ChatMessage {
   content: string;
   finishReason?: string;
   error?: boolean;
+  sources?: RetrievalHit[];
 }
+
+const OPEN_SYSTEM_PROMPT =
+  "You are a helpful assistant on ModelForge. Reply in the same language as the user. " +
+  "Give accurate, specific answers. If you are unsure, say so instead of inventing facts. " +
+  "When explaining a topic, use short paragraphs and markdown headings or bullet lists.";
+
+const GROUNDED_SYSTEM_PROMPT =
+  "You are a knowledge-base assistant on ModelForge. Answer only from retrieved knowledge passages. " +
+  "If a passage lists steps or a procedure, include every step in order. " +
+  "If the user asks what is in the knowledge base, list the documents from the retrieved catalog. " +
+  "If the passages do not contain the answer, say that in the same language as the user. " +
+  "Never reply with only the English words \"I do not know\" when the user wrote Bangla. " +
+  "Never invent laws, rates, or citations. " +
+  "Reply in the same language as the user. If the user writes Bangla, answer in Bangla. " +
+  "Address the user as আপনি, not আমি.";
 
 interface StreamChunk {
   choices?: Array<{
@@ -21,16 +50,29 @@ interface StreamChunk {
     finish_reason?: string | null;
   }>;
   error?: { message?: string };
+  modelforge?: { retrieval?: { hits?: RetrievalHit[] } };
 }
 
-export function useChatStream(options: { defaultMaxTokens?: number } = {}) {
+export function useChatStream(
+  options: { defaultMaxTokens?: number; knowledgeBases?: KnowledgeBaseOption[] } = {},
+) {
+  const knowledgeBases = options.knowledgeBases ?? [];
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [model, setModel] = useState("auto");
+  const [knowledgeBaseId, setKnowledgeBaseId] = useState(knowledgeBases.length > 0 ? "all" : "off");
   const [maxTokens, setMaxTokens] = useState(options.defaultMaxTokens ?? 2048);
   const [temperature, setTemperature] = useState(0.7);
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const previousBaseCount = useRef(knowledgeBases.length);
+
+  useEffect(() => {
+    if (previousBaseCount.current === 0 && knowledgeBases.length > 0 && knowledgeBaseId === "off") {
+      setKnowledgeBaseId("all");
+    }
+    previousBaseCount.current = knowledgeBases.length;
+  }, [knowledgeBaseId, knowledgeBases.length]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -53,6 +95,13 @@ export function useChatStream(options: { defaultMaxTokens?: number } = {}) {
       };
       const assistantId = crypto.randomUUID();
       const history = [...messages, userMessage];
+      const selectedIds =
+        knowledgeBaseId === "off"
+          ? []
+          : knowledgeBaseId === "all"
+            ? knowledgeBases.map((base) => base.id)
+            : [knowledgeBaseId];
+      const ragEnabled = selectedIds.length > 0;
 
       setMessages([...history, { id: assistantId, role: "assistant", content: "" }]);
       setInput("");
@@ -67,10 +116,19 @@ export function useChatStream(options: { defaultMaxTokens?: number } = {}) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             model,
-            messages: history.map(({ role, content }) => ({ role, content })),
+            messages: [
+              { role: "system", content: ragEnabled ? GROUNDED_SYSTEM_PROMPT : OPEN_SYSTEM_PROMPT },
+              ...history.map(({ role, content }) => ({ role, content })),
+            ],
             max_tokens: maxTokens,
-            temperature,
+            temperature: ragEnabled ? Math.min(temperature, 0.3) : temperature,
             stream: true,
+            metadata: {
+              modelforge: {
+                knowledge_base_ids: selectedIds,
+                rag_top_k: 4,
+              },
+            },
           }),
           signal: controller.signal,
         });
@@ -110,6 +168,15 @@ export function useChatStream(options: { defaultMaxTokens?: number } = {}) {
               continue;
             }
             if (chunk.error?.message) throw new Error(chunk.error.message);
+
+            const hits = chunk.modelforge?.retrieval?.hits;
+            if (hits) {
+              setMessages((current) =>
+                current.map((message) =>
+                  message.id === assistantId ? { ...message, sources: hits } : message,
+                ),
+              );
+            }
 
             const delta = chunk.choices?.[0]?.delta?.content ?? "";
             const finishReason = chunk.choices?.[0]?.finish_reason ?? undefined;
@@ -153,7 +220,7 @@ export function useChatStream(options: { defaultMaxTokens?: number } = {}) {
         setStreaming(false);
       }
     },
-    [input, maxTokens, messages, model, streaming, temperature],
+    [input, knowledgeBaseId, knowledgeBases, maxTokens, messages, model, streaming, temperature],
   );
 
   return {
@@ -162,6 +229,9 @@ export function useChatStream(options: { defaultMaxTokens?: number } = {}) {
     setInput,
     model,
     setModel,
+    knowledgeBases,
+    knowledgeBaseId,
+    setKnowledgeBaseId,
     maxTokens,
     setMaxTokens,
     temperature,
@@ -220,7 +290,7 @@ export function splitReasoning(content: string): SplitMessage {
 }
 
 export function finishLabel(message: ChatMessage): string {
-  if (message.finishReason === "length") return "Token limit reached";
+  if (message.finishReason === "length") return "Answer cut off";
   if (message.finishReason === "stopped") return "Stopped";
   if (message.finishReason === "error") return "Error";
   return "ModelForge";

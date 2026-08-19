@@ -8,6 +8,7 @@ import {
   FileArchive,
   Heart,
   Loader2,
+  RotateCcw,
   Search,
   ShieldAlert,
   X,
@@ -54,6 +55,7 @@ interface FileBundle {
 interface DownloadJob {
   id: string;
   repoId: string;
+  filePath?: string;
   fileName: string;
   relativePath: string;
   status: "queued" | "downloading" | "verifying" | "completed" | "cancelled" | "failed";
@@ -62,6 +64,7 @@ interface DownloadJob {
   bytesPerSecond: number;
   error: string | null;
   registeredModelId: string | null;
+  attempt?: number;
 }
 
 const ACTIVE = new Set(["queued", "downloading", "verifying"]);
@@ -117,6 +120,7 @@ export function HuggingFaceBrowser() {
   const [query, setQuery] = useState("");
   const [models, setModels] = useState<HubModel[]>([]);
   const [searching, setSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [selectedModel, setSelectedModel] = useState<HubModel | null>(null);
   const [revision, setRevision] = useState("main");
   const [files, setFiles] = useState<HubFile[]>([]);
@@ -125,6 +129,10 @@ export function HuggingFaceBrowser() {
   const [downloads, setDownloads] = useState<DownloadJob[]>([]);
   const previousStatuses = useRef(new Map<string, string>());
   const searchController = useRef<AbortController | null>(null);
+  const toastRef = useRef(toast);
+  const routerRef = useRef(router);
+  toastRef.current = toast;
+  routerRef.current = router;
 
   const bundles = useMemo(() => bundleFiles(files), [files]);
   const hasActive = downloads.some((job) => ACTIVE.has(job.status));
@@ -137,7 +145,7 @@ export function HuggingFaceBrowser() {
       for (const job of body.downloads) {
         const previous = previousStatuses.current.get(job.id);
         if (previous && previous !== job.status && job.status === "completed") {
-          toast.push({
+          toastRef.current.push({
             tone: "ok",
             title: `${job.fileName} downloaded`,
             description: job.registeredModelId
@@ -145,10 +153,10 @@ export function HuggingFaceBrowser() {
               : `Saved to ${job.relativePath}`,
             duration: 7000,
           });
-          router.refresh();
+          routerRef.current.refresh();
         }
         if (previous && previous !== job.status && job.status === "failed") {
-          toast.push({
+          toastRef.current.push({
             tone: "danger",
             title: `${job.fileName} failed`,
             description: job.error ?? "Download failed",
@@ -161,15 +169,16 @@ export function HuggingFaceBrowser() {
     } catch {
       // The browser itself reports search/download errors; polling is best effort.
     }
-  }, [router, toast]);
+  }, []);
 
   useEffect(() => {
-    const initial = window.setTimeout(() => void refreshDownloads(), 0);
-    const handle = window.setInterval(() => void refreshDownloads(), hasActive ? 750 : 5000);
-    return () => {
-      window.clearTimeout(initial);
-      window.clearInterval(handle);
-    };
+    void refreshDownloads();
+    if (!hasActive) return;
+    const handle = window.setInterval(() => {
+      if (document.hidden) return;
+      void refreshDownloads();
+    }, 1000);
+    return () => window.clearInterval(handle);
   }, [refreshDownloads, hasActive]);
 
   async function searchModels() {
@@ -179,6 +188,7 @@ export function HuggingFaceBrowser() {
     const controller = new AbortController();
     searchController.current = controller;
     setSearching(true);
+    setHasSearched(true);
     setSelectedModel(null);
     setFiles([]);
     try {
@@ -276,6 +286,32 @@ export function HuggingFaceBrowser() {
     await refreshDownloads();
   }
 
+  async function retryDownload(id: string) {
+    try {
+      await readJson<DownloadJob>(
+        await fetch("/api/admin/huggingface", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ retryId: id }),
+        }),
+      );
+      toast.push({
+        tone: "info",
+        title: "Download resumed",
+        description: "Continuing from the partial file on disk",
+        duration: 5000,
+      });
+      await refreshDownloads();
+    } catch (error) {
+      toast.push({
+        tone: "danger",
+        title: "Could not retry download",
+        description: error instanceof Error ? error.message : "Unknown error",
+        duration: 0,
+      });
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-line-strong bg-gradient-to-br from-surface-1 via-surface-1 to-warn-50/40 p-4 sm:p-5">
@@ -292,25 +328,34 @@ export function HuggingFaceBrowser() {
           </div>
         </div>
 
-        <div className="mt-4 flex gap-2">
+        <form
+          className="mt-4 flex gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void searchModels();
+          }}
+        >
           <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-content-muted" aria-hidden />
             <input
               className="input !pl-9"
               value={query}
-              placeholder="Search models, e.g. Llama 3.2, Qwen Coder, Phi…"
+              placeholder="Search models or paste owner/repo, e.g. BanglaLLM/BanglaLLama-3.2-3b…"
               onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void searchModels();
-              }}
             />
           </div>
-          <button type="button" className="btn" onClick={() => void searchModels()} disabled={searching || query.trim().length < 2}>
+          <button type="submit" className="btn" disabled={searching || query.trim().length < 2}>
             {searching ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Search className="size-4" aria-hidden />}
             <span className="hidden sm:inline">Search Hub</span>
           </button>
-        </div>
+        </form>
       </div>
+
+      {hasSearched && !searching && models.length === 0 && (
+        <div className="rounded-xl border border-dashed border-line-strong bg-surface-1 px-4 py-8 text-center text-sm text-content-muted">
+          No GGUF repositories matched that query. Try the exact Hub id (`owner/repo`) or a shorter name.
+        </div>
+      )}
 
       {models.length > 0 && (
         <div className="grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -424,7 +469,12 @@ export function HuggingFaceBrowser() {
           </div>
           <div className="divide-y divide-line">
             {downloads.slice(0, 12).map((job) => (
-              <DownloadRow key={job.id} job={job} onCancel={() => void cancelDownload(job.id)} />
+              <DownloadRow
+                key={job.id}
+                job={job}
+                onCancel={() => void cancelDownload(job.id)}
+                onRetry={() => void retryDownload(job.id)}
+              />
             ))}
           </div>
         </div>
@@ -433,11 +483,21 @@ export function HuggingFaceBrowser() {
   );
 }
 
-function DownloadRow({ job, onCancel }: { job: DownloadJob; onCancel: () => void }) {
+function DownloadRow({
+  job,
+  onCancel,
+  onRetry,
+}: {
+  job: DownloadJob;
+  onCancel: () => void;
+  onRetry: () => void;
+}) {
   const percent = job.totalBytes > 0 ? Math.min(100, (job.downloadedBytes / job.totalBytes) * 100) : 0;
   const remaining = Math.max(0, job.totalBytes - job.downloadedBytes);
   const etaSeconds = job.bytesPerSecond > 0 ? remaining / job.bytesPerSecond : 0;
   const active = ACTIVE.has(job.status);
+  const canRetry = job.status === "failed" || job.status === "cancelled";
+  const showProgress = active || job.status === "completed" || job.downloadedBytes > 0;
   const statusTone =
     job.status === "completed" ? "ok" : job.status === "failed" ? "danger" : job.status === "cancelled" ? "warn" : "info";
 
@@ -461,6 +521,11 @@ function DownloadRow({ job, onCancel }: { job: DownloadJob; onCancel: () => void
             </div>
             <div className="flex items-center gap-1.5">
               <Badge tone={statusTone}>{job.status}</Badge>
+              {canRetry && (
+                <button type="button" className="icon-btn !size-7" onClick={onRetry} title="Retry from partial file">
+                  <RotateCcw className="size-3.5" aria-hidden />
+                </button>
+              )}
               <button
                 type="button"
                 className="icon-btn !size-7"
@@ -471,11 +536,11 @@ function DownloadRow({ job, onCancel }: { job: DownloadJob; onCancel: () => void
               </button>
             </div>
           </div>
-          {(active || job.status === "completed") && (
+          {showProgress && (
             <>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3" role="progressbar" aria-valuenow={Math.round(percent)}>
                 <div
-                  className={`h-full rounded-full transition-[width] duration-300 ${job.status === "completed" ? "bg-ok-500" : "bg-brand-600"}`}
+                  className={`h-full rounded-full transition-[width] duration-300 ${job.status === "completed" ? "bg-ok-500" : job.status === "failed" ? "bg-danger-500" : "bg-brand-600"}`}
                   style={{ width: `${job.status === "queued" ? 2 : Math.max(2, percent)}%` }}
                 >
                   {active && <div className="h-full w-full progress-stripes" />}
@@ -488,7 +553,9 @@ function DownloadRow({ job, onCancel }: { job: DownloadJob; onCancel: () => void
                     ? "verifying SHA-256"
                     : job.bytesPerSecond > 0
                       ? `${formatBytes(job.bytesPerSecond)}/s${etaSeconds ? ` · ${Math.ceil(etaSeconds)}s left` : ""}`
-                      : job.status}
+                      : job.attempt && job.attempt > 1
+                        ? `attempt ${job.attempt}`
+                        : job.status}
                 </span>
               </div>
             </>

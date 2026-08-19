@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 /** Depth cap so a misconfigured weights dir can never walk an entire drive. */
@@ -104,4 +104,44 @@ export async function scanWeights(): Promise<DiscoveredWeight[]> {
 export async function isKnownWeightPath(relativePath: string): Promise<boolean> {
   const files = await scanWeights();
   return files.some((file) => file.relativePath === relativePath);
+}
+
+function resolveInsideWeightsDir(relativePath: string): string {
+  const root = path.resolve(weightsDir());
+  const target = path.resolve(root, relativePath);
+  const inside = path.relative(root, target);
+  if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) {
+    throw new Error("Refusing to delete weights outside MODEL_WEIGHTS_DIR");
+  }
+  return target;
+}
+
+/** Deletes a registered GGUF and any llama.cpp shards that share its prefix. */
+export async function deleteRegisteredWeights(relativePath: string): Promise<string[]> {
+  const target = resolveInsideWeightsDir(relativePath);
+  const root = path.resolve(weightsDir());
+  const dir = path.dirname(target);
+  const fileName = path.basename(target);
+  const base = fileName.replace(/\.gguf$/i, "");
+  const shard = base.match(SHARD_PATTERN);
+  const names = shard
+    ? Array.from({ length: Number(shard[2]) }, (_, index) => {
+        const n = String(index + 1).padStart(5, "0");
+        return `${base.replace(SHARD_PATTERN, "")}-${n}-of-${shard[2]}.gguf`;
+      })
+    : [fileName];
+
+  const deleted: string[] = [];
+  for (const name of names) {
+    const file = path.join(dir, name);
+    const inside = path.relative(root, file);
+    if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) continue;
+    try {
+      await unlink(file);
+      deleted.push(inside.split(path.sep).join("/"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return deleted;
 }

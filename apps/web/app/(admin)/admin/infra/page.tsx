@@ -28,7 +28,7 @@ interface EngineModels {
 }
 
 interface AvailableWeights {
-  files?: Array<{ relativePath: string; sizeBytes: number }>;
+  files?: Array<{ relativePath: string; sizeBytes: number; registeredAs?: string | null }>;
 }
 
 export default async function AdminInfraPage() {
@@ -52,6 +52,14 @@ export default async function AdminInfraPage() {
   const totalRam = health.total_ram_mb ?? 0;
 
   const sizeByPath = new Map((available.files ?? []).map((file) => [file.relativePath, file.sizeBytes]));
+  const sizeByModelId = new Map(
+    (available.files ?? [])
+      .filter(
+        (file): file is typeof file & { registeredAs: string } =>
+          typeof file.registeredAs === "string",
+      )
+      .map((file) => [file.registeredAs, file.sizeBytes]),
+  );
   const catalogModels: CatalogModel[] = catalog.map((model) => ({
     modelId: model.modelId,
     displayName: model.displayName,
@@ -59,7 +67,7 @@ export default async function AdminInfraPage() {
     contextLength: model.contextLength,
     status: model.status,
     quantization: model.quantization,
-    sizeBytes: sizeByPath.get(model.weightsPath) ?? null,
+    sizeBytes: sizeByModelId.get(model.modelId) ?? sizeByPath.get(model.weightsPath) ?? null,
   }));
 
   return (
