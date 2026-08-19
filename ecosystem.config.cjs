@@ -56,8 +56,7 @@ module.exports = {
     {
       name: "modelforge-usage-worker",
       cwd: APP_ROOT,
-      script: "node_modules/.bin/tsx",
-      args: "apps/gateway/src/workers/usage-worker.ts",
+      script: "./apps/gateway/dist/workers/usage-worker.js",
       instances: 1,
       exec_mode: "fork",
       autorestart: true,
@@ -72,8 +71,7 @@ module.exports = {
     {
       name: "modelforge-invoice-worker",
       cwd: APP_ROOT,
-      script: "node_modules/.bin/tsx",
-      args: "apps/gateway/src/workers/invoice-worker.ts",
+      script: "./apps/gateway/dist/workers/invoice-worker.js",
       instances: 1,
       exec_mode: "fork",
       autorestart: true,
