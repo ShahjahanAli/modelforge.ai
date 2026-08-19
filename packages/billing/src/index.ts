@@ -27,14 +27,16 @@ export async function generateInvoice(
     },
   });
 
-  const amountFromRequests = events.reduce((sum, event) => {
+  type Event = (typeof events)[number];
+
+  const amountFromRequests = events.reduce((sum: number, event: Event) => {
     const micros = event.inferenceRequest?.costMicros;
     return micros ? sum + Number(micros / 10_000n) : sum;
   }, 0);
 
   const amountFromRates = calculateUsageCents(
     events
-      .map((event) => {
+      .map((event: Event) => {
         const priced =
           event.inferenceRequest?.pricingVersion ??
           (event.model
@@ -51,7 +53,7 @@ export async function generateInvoice(
           pricePerMTokOut: priced.pricePerMTokOut,
         };
       })
-      .filter((line): line is NonNullable<typeof line> => line !== null),
+      .filter(<T,>(line: T | null): line is T => line !== null),
   );
 
   const amountCents = amountFromRequests > 0 ? amountFromRequests : amountFromRates;
