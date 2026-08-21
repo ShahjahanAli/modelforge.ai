@@ -50,7 +50,7 @@ export async function persistUsageEvent(data: UsageJobExtended): Promise<void> {
       create: {
         customerId: data.customerId,
         apiKeyId: data.apiKeyId,
-        modelId: data.hostedModelId,
+        modelId: data.hostedModelId || null,
         modelSlug: data.modelSlug,
         promptTokens: data.promptTokens,
         completionTokens: data.completionTokens,
@@ -69,6 +69,18 @@ export async function persistUsageEvent(data: UsageJobExtended): Promise<void> {
     }
   });
 
+  console.log(
+    JSON.stringify({
+      event: "usage.persisted",
+      customerId: data.customerId,
+      apiKeyId: data.apiKeyId,
+      modelSlug: data.modelSlug,
+      promptTokens: data.promptTokens,
+      completionTokens: data.completionTokens,
+      tokens: data.promptTokens + data.completionTokens,
+      idempotencyKey: data.idempotencyKey,
+    }),
+  );
   if (data.inferenceRequestId) {
     const request = await prisma.inferenceRequest.findUnique({
       where: { id: data.inferenceRequestId },

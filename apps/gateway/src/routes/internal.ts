@@ -23,9 +23,59 @@ import {
   searchHuggingFaceModels,
   startHuggingFaceDownload,
 } from "../lib/huggingFace.js";
+import { probeVoiceStatus, resetSttProviderCache } from "../lib/voice/index.js";
+import {
+  catalogForProvider,
+  getVoiceModelJob,
+  NEMO_MODEL_CATALOG,
+  startSttModelInstall,
+  WHISPER_MODEL_CATALOG,
+} from "../lib/voice/modelJobs.js";
+import {
+  resolveActiveSttSelection,
+  writeVoiceRuntimeConfig,
+  type SttProviderId,
+} from "../lib/voice/runtimeConfig.js";
+import { loadEnv } from "../lib/env.js";
 
 export const internalRouter = Router();
 internalRouter.use(internalAuth);
+
+function voiceEnvFromProcess() {
+  const env = loadEnv();
+  return {
+    VOICE_ENABLED: env.VOICE_ENABLED,
+    VOICE_UPLOAD_DIR: env.VOICE_UPLOAD_DIR,
+    VOICE_MAX_UPLOAD_MB: env.VOICE_MAX_UPLOAD_MB,
+    VOICE_RETENTION_HOURS: env.VOICE_RETENTION_HOURS,
+    VOICE_RATE_LIMIT_PER_HOUR: env.VOICE_RATE_LIMIT_PER_HOUR,
+    STT_PROVIDER: env.STT_PROVIDER,
+    STT_LANGUAGE: env.STT_LANGUAGE,
+    STT_FASTER_WHISPER_MODEL: env.STT_FASTER_WHISPER_MODEL,
+    STT_FASTER_WHISPER_DEVICE: env.STT_FASTER_WHISPER_DEVICE,
+    STT_FASTER_WHISPER_COMPUTE_TYPE: env.STT_FASTER_WHISPER_COMPUTE_TYPE,
+    STT_FASTER_WHISPER_BEAM_SIZE: env.STT_FASTER_WHISPER_BEAM_SIZE,
+    STT_FASTER_WHISPER_BEST_OF: env.STT_FASTER_WHISPER_BEST_OF,
+    STT_FASTER_WHISPER_TEMPERATURE: env.STT_FASTER_WHISPER_TEMPERATURE,
+    STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD: env.STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD,
+    STT_PYTHON_BIN: env.STT_PYTHON_BIN,
+    STT_FASTER_WHISPER_SCRIPT: env.STT_FASTER_WHISPER_SCRIPT,
+    STT_NEMO_MODEL: env.STT_NEMO_MODEL,
+    STT_NEMO_DEVICE: env.STT_NEMO_DEVICE,
+    STT_NEMO_SCRIPT: env.STT_NEMO_SCRIPT,
+    DIARIZATION_ENABLED: env.DIARIZATION_ENABLED,
+    DIARIZATION_PROVIDER: env.DIARIZATION_PROVIDER,
+    DIARIZATION_MODEL: env.DIARIZATION_MODEL,
+    DIARIZATION_DEVICE: env.DIARIZATION_DEVICE,
+    DIARIZATION_SCRIPT: env.DIARIZATION_SCRIPT,
+    DIARIZATION_MIN_SPEAKERS: env.DIARIZATION_MIN_SPEAKERS,
+    DIARIZATION_MAX_SPEAKERS: env.DIARIZATION_MAX_SPEAKERS,
+  };
+}
+
+function parseProvider(value: unknown): SttProviderId {
+  return value === "nemo" ? "nemo" : "faster-whisper";
+}
 
 function normalizedWeightPath(value: string): string {
   const root = weightsDir();
@@ -200,6 +250,93 @@ internalRouter.get("/engine/health", async (_req, res) => {
       backend: activeBackend(),
       error: err instanceof Error ? err.message : "engine unreachable",
     });
+  }
+});
+
+internalRouter.get("/voice/status", async (_req, res) => {
+  try {
+    const status = await probeVoiceStatus(voiceEnvFromProcess());
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({
+      enabled: false,
+      ready: false,
+      error: error instanceof Error ? error.message : "voice status unavailable",
+    });
+  }
+});
+
+internalRouter.get("/voice/models", async (_req, res) => {
+  try {
+    const status = await probeVoiceStatus(voiceEnvFromProcess());
+    res.json({
+      provider: status.provider,
+      activeModel: status.configuredModel,
+      envModel: status.envModel,
+      envProvider: status.envProvider,
+      device: status.device,
+      computeType: status.computeType,
+      modelCached: status.modelCached,
+      providers: status.providers,
+      catalog: {
+        "faster-whisper": WHISPER_MODEL_CATALOG,
+        nemo: NEMO_MODEL_CATALOG,
+      },
+      models: status.models,
+      activeInstall: status.activeInstall,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "voice models unavailable" });
+  }
+});
+
+internalRouter.get("/voice/models/jobs/:id", (req, res) => {
+  const job = getVoiceModelJob(req.params.id!);
+  if (!job) return res.status(404).json({ error: "Install job not found" });
+  res.json(job);
+});
+
+internalRouter.post("/voice/models/install", async (req, res) => {
+  try {
+    const env = voiceEnvFromProcess();
+    const provider = parseProvider(req.body?.provider ?? env.STT_PROVIDER);
+    const model = String(req.body?.model ?? "").trim();
+    const activateOnSuccess = req.body?.activateOnSuccess !== false;
+    if (!model) return res.status(400).json({ error: "model is required" });
+    const job = await startSttModelInstall({
+      provider,
+      pythonBin: env.STT_PYTHON_BIN,
+      scriptPath: provider === "nemo" ? env.STT_NEMO_SCRIPT : env.STT_FASTER_WHISPER_SCRIPT,
+      model,
+      device: provider === "nemo" ? env.STT_NEMO_DEVICE : env.STT_FASTER_WHISPER_DEVICE,
+      computeType: env.STT_FASTER_WHISPER_COMPUTE_TYPE,
+      activateOnSuccess,
+    });
+    res.status(202).json(job);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Install failed to start" });
+  }
+});
+
+internalRouter.post("/voice/models/activate", async (req, res) => {
+  try {
+    const env = voiceEnvFromProcess();
+    const provider = parseProvider(req.body?.provider ?? env.STT_PROVIDER);
+    const model = String(req.body?.model ?? "").trim();
+    if (!model) return res.status(400).json({ error: "model is required" });
+    if (!catalogForProvider(provider).some((entry) => entry.id === model)) {
+      return res.status(400).json({ error: `Unsupported ${provider} model: ${model}` });
+    }
+    const runtime = await writeVoiceRuntimeConfig({ provider, model });
+    resetSttProviderCache();
+    const active = await resolveActiveSttSelection({
+      provider: env.STT_PROVIDER,
+      whisperModel: env.STT_FASTER_WHISPER_MODEL,
+      nemoModel: env.STT_NEMO_MODEL,
+    });
+    res.json({ ok: true, provider: active.provider, model: active.model, runtime });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Activate failed" });
   }
 });
 

@@ -37,12 +37,63 @@ function memoryReleaseConc(apiKeyId: string) {
   else memoryConc.set(key, current);
 }
 
+function isOrchestrationChild(req: Request): boolean {
+  return req.header("x-modelforge-orchestration") === "voice-analyze";
+}
+
+/** RPM only — for long-running voice uploads that later call chat internally. */
+export async function rateLimitRpmMiddleware(req: Request, res: Response, next: NextFunction) {
+  try {
+    const auth = req.auth;
+    if (!auth) {
+      return res.status(401).json({ error: { type: "authentication_error", message: "Unauthenticated" } });
+    }
+
+    const rpm = Math.max(1, auth.requestsPerMinute);
+    const windowMs = 60_000;
+
+    if (!isRedisEnabled()) {
+      const count = memoryIncrRpm(auth.apiKeyId, windowMs);
+      if (count > rpm) {
+        res.setHeader("Retry-After", "60");
+        return res.status(429).json({
+          error: { type: "rate_limit_exceeded", message: `Limit ${rpm} requests/minute` },
+        });
+      }
+      return next();
+    }
+
+    const redis = getRedis();
+    const key = `rl:${auth.apiKeyId}`;
+    const now = Date.now();
+    const bucketKey = `${key}:${Math.floor(now / windowMs)}`;
+    const count = await redis.incr(bucketKey);
+    if (count === 1) await redis.pexpire(bucketKey, windowMs);
+    if (count > rpm) {
+      res.setHeader("Retry-After", "60");
+      return res.status(429).json({
+        error: { type: "rate_limit_exceeded", message: `Limit ${rpm} requests/minute` },
+      });
+    }
+    next();
+  } catch (err) {
+    console.error("rate limit error", err);
+    return res.status(503).json({
+      error: { type: "server_error", message: "Rate limiter unavailable" },
+    });
+  }
+}
+
 /** Redis token-bucket when enabled; in-memory fallback for REDIS_ENABLED=false. */
 export async function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
   try {
     const auth = req.auth;
     if (!auth) {
       return res.status(401).json({ error: { type: "authentication_error", message: "Unauthenticated" } });
+    }
+    // Nested server-side calls (voice -> chat) must not consume a second concurrency slot.
+    if (isOrchestrationChild(req)) {
+      return next();
     }
 
     const rpm = Math.max(1, auth.requestsPerMinute);

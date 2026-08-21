@@ -29,6 +29,24 @@ export interface ChatMessage {
   sources?: RetrievalHit[];
 }
 
+export interface VoiceState {
+  status: "idle" | "uploading" | "transcribing" | "analyzing" | "done" | "error";
+  step: "uploading" | "transcribing" | "analyzing" | "done" | "error";
+  transcript: string;
+  analysis: string;
+  error?: string;
+}
+
+function friendlyVoiceError(message: string): string {
+  if (/max concurrent/i.test(message)) {
+    return "Another chat or voice request is still running. Wait for it to finish, then try again.";
+  }
+  if (/requests\/minute/i.test(message) || /rate_limit/i.test(message)) {
+    return "Too many requests right now. Please wait a minute and retry.";
+  }
+  return message;
+}
+
 const OPEN_SYSTEM_PROMPT =
   "You are a helpful assistant on ModelForge. Reply in the same language as the user. " +
   "Give accurate, specific answers. If you are unsure, say so instead of inventing facts. " +
@@ -64,6 +82,12 @@ export function useChatStream(
   const [maxTokens, setMaxTokens] = useState(options.defaultMaxTokens ?? 2048);
   const [temperature, setTemperature] = useState(0.7);
   const [streaming, setStreaming] = useState(false);
+  const [voice, setVoice] = useState<VoiceState>({
+    status: "idle",
+    step: "uploading",
+    transcript: "",
+    analysis: "",
+  });
   const abortRef = useRef<AbortController | null>(null);
   const previousBaseCount = useRef(knowledgeBases.length);
 
@@ -81,7 +105,62 @@ export function useChatStream(
   const reset = useCallback(() => {
     setMessages([]);
     setInput("");
+    setVoice({ status: "idle", step: "uploading", transcript: "", analysis: "" });
   }, []);
+
+  const analyzeVoice = useCallback(
+    async (file: File, prompt?: string) => {
+      if (streaming) return;
+      const hasAnalysisPrompt = Boolean(prompt?.trim());
+      let step: VoiceState["step"] = "uploading";
+      setVoice({ status: "uploading", step, transcript: "", analysis: "" });
+      const form = new FormData();
+      form.set("audio", file, file.name || "recording.webm");
+      if (hasAnalysisPrompt) form.set("prompt", prompt!.trim());
+      form.set("model", model);
+      form.set("max_tokens", String(maxTokens));
+      try {
+        step = "transcribing";
+        setVoice({ status: "transcribing", step, transcript: "", analysis: "" });
+        const response = await fetch("/api/voice/analyze", { method: "POST", body: form });
+        const json = (await response.json().catch(() => null)) as
+          | { transcript?: { text?: string }; analysis?: string; error?: { message?: string } }
+          | null;
+        if (!response.ok) {
+          throw new Error(json?.error?.message ?? `Voice request failed (${response.status})`);
+        }
+        const transcript = json?.transcript?.text?.trim() ?? "";
+        const analysis = json?.analysis?.trim() ?? "";
+        if (hasAnalysisPrompt) {
+          setVoice({ status: "analyzing", step: "analyzing", transcript, analysis: "" });
+        }
+        setMessages((current) => {
+          const transcriptMessage = transcript
+            ? `[Voice transcript]\n${transcript}`
+            : "[Empty transcript]";
+          const nextMessages: ChatMessage[] = [
+            ...current,
+            { id: crypto.randomUUID(), role: "user", content: transcriptMessage },
+          ];
+          if (analysis) {
+            nextMessages.push({ id: crypto.randomUUID(), role: "assistant", content: analysis });
+          }
+          return nextMessages;
+        });
+        setVoice({ status: "done", step: "done", transcript, analysis });
+      } catch (error) {
+        const raw = error instanceof Error ? error.message : "Voice analysis failed";
+        setVoice((current) => ({
+          status: "error",
+          step,
+          transcript: current.transcript,
+          analysis: "",
+          error: friendlyVoiceError(raw),
+        }));
+      }
+    },
+    [maxTokens, model, setMessages, streaming],
+  );
 
   const send = useCallback(
     async (text?: string) => {
@@ -223,6 +302,16 @@ export function useChatStream(
     [input, knowledgeBaseId, knowledgeBases, maxTokens, messages, model, streaming, temperature],
   );
 
+  const rerunTranscript = useCallback(
+    async (transcriptText: string, prompt?: string) => {
+      const normalized = transcriptText.trim();
+      const analysisPrompt = prompt?.trim();
+      if (!normalized || !analysisPrompt || streaming) return;
+      await send(`${analysisPrompt}\n\nTranscript:\n${normalized}`);
+    },
+    [send, streaming],
+  );
+
   return {
     messages,
     input,
@@ -237,6 +326,9 @@ export function useChatStream(
     temperature,
     setTemperature,
     streaming,
+    voice,
+    analyzeVoice,
+    rerunTranscript,
     send,
     stop,
     reset,

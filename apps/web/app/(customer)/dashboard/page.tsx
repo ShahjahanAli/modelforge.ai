@@ -1,7 +1,8 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@modelforge/db";
-import { Activity, Coins, Gauge, Hash, Layers, Timer } from "lucide-react";
+import { summarizeUsageEvents, classifyUsageSlug, effectiveMonthlyQuota } from "@modelforge/platform";
+import { Activity, Coins, Database, Gauge, Hash, Layers, Mic, Timer } from "lucide-react";
 import { authOptions } from "@/lib/auth";
 import { UsageChart, type UsagePoint } from "@/components/UsageChart";
 import { RecentRequestsTable } from "@/components/RecentRequestsTable";
@@ -28,13 +29,17 @@ export default async function DashboardPage() {
   // Server-side reporting window intentionally uses the request time.
   // eslint-disable-next-line react-hooks/purity
   const since = new Date(Date.now() - WINDOW_DAYS * 86400000);
-  const [events, sub, ledger, hostedModels] = await Promise.all([
+  const [events, sub, ledger, customer, hostedModels] = await Promise.all([
     prisma.usageEvent.findMany({
       where: { customerId, createdAt: { gte: since } },
       orderBy: { createdAt: "asc" },
     }),
     prisma.subscription.findUnique({ where: { customerId }, include: { plan: true } }),
     prisma.quotaLedger.findUnique({ where: { customerId } }),
+    prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { quotaBonusTokens: true },
+    }),
     prisma.hostedModel.findMany(),
   ]);
 
@@ -59,21 +64,25 @@ export default async function DashboardPage() {
   const latencies: number[] = [];
 
   for (const event of events) {
+    const kind = classifyUsageSlug(event.modelSlug);
     const day = event.createdAt.toISOString().slice(0, 10);
-    const point = byDay.get(day) ?? { day, prompt: 0, completion: 0 };
-    point.prompt += event.promptTokens;
-    point.completion += event.completionTokens;
-    byDay.set(day, point);
-
-    promptTotal += event.promptTokens;
-    completionTotal += event.completionTokens;
+    // Daily chart = LLM tokenizer traffic only (STT/Neo4j use different units).
+    if (kind === "llm") {
+      const point = byDay.get(day) ?? { day, prompt: 0, completion: 0 };
+      point.prompt += event.promptTokens;
+      point.completion += event.completionTokens;
+      byDay.set(day, point);
+      promptTotal += event.promptTokens;
+      completionTotal += event.completionTokens;
+    }
     latencies.push(event.latencyMs);
 
     const priced = priceBySlug.get(event.modelSlug);
-    const eventCost = priced
-      ? (event.promptTokens / 1e6) * priced.pricePerMTokIn +
-        (event.completionTokens / 1e6) * priced.pricePerMTokOut
-      : 0;
+    const eventCost =
+      kind === "llm" && priced
+        ? (event.promptTokens / 1e6) * priced.pricePerMTokIn +
+          (event.completionTokens / 1e6) * priced.pricePerMTokOut
+        : 0;
     costCents += eventCost;
 
     const row = byModel.get(event.modelSlug) ?? {
@@ -88,6 +97,7 @@ export default async function DashboardPage() {
     byModel.set(event.modelSlug, row);
   }
 
+  const usageSplit = summarizeUsageEvents(events);
   const chartData = [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
   const totalTokens = promptTotal + completionTotal;
   const sortedLatencies = [...latencies].sort((a, b) => a - b);
@@ -96,14 +106,16 @@ export default async function DashboardPage() {
   const topModels = [...byModel.values()].sort((a, b) => b.tokens - a.tokens);
 
   const quotaUsed = ledger ? Number(ledger.tokensUsed) : 0;
-  const quotaLimit = sub ? Number(sub.plan.monthlyTokenQuota) : 0;
+  const quotaLimit = sub
+    ? Number(effectiveMonthlyQuota(sub.plan.monthlyTokenQuota, customer?.quotaBonusTokens ?? 0n))
+    : 0;
   const unlimited = quotaLimit === 0;
   return (
     <>
       <PageHeader
         eyebrow={`Last ${WINDOW_DAYS} days`}
         title="Usage overview"
-        description="Token throughput, latency distribution, and estimated spend across your OpenAI-compatible endpoints."
+        description="LLM tokens, Whisper/STT audio seconds, and Neo4j graph ops — all billed to your API key."
         actions={
           <>
             <Badge tone="info">{sub?.plan.displayName ?? "No plan"}</Badge>
@@ -116,16 +128,56 @@ export default async function DashboardPage() {
 
       <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
         <StatCard
-          label="Total tokens"
-          value={totalTokens.toLocaleString()}
+          label="LLM tokens"
+          value={usageSplit.llmTotal.toLocaleString()}
           icon={Hash}
           accent="brand"
           hint={
             <span className="font-mono">
-              {promptTotal.toLocaleString()} in · {completionTotal.toLocaleString()} out
+              {usageSplit.llmPrompt.toLocaleString()} in · {usageSplit.llmCompletion.toLocaleString()}{" "}
+              out
             </span>
           }
         />
+        <StatCard
+          label="STT audio"
+          value={usageSplit.sttSeconds.toFixed(1)}
+          unit="sec"
+          icon={Mic}
+          accent="signal"
+          hint={
+            <span className="font-mono">
+              {usageSplit.sttBillable.toLocaleString()} billable units (Whisper is ASR/ML, not an LLM)
+            </span>
+          }
+        />
+        <StatCard
+          label="Neo4j ops"
+          value={(usageSplit.neo4jReads + usageSplit.neo4jWrites).toLocaleString()}
+          icon={Database}
+          accent="ok"
+          hint={
+            <span className="font-mono">
+              {usageSplit.neo4jReads.toLocaleString()} read · {usageSplit.neo4jWrites.toLocaleString()}{" "}
+              write
+            </span>
+          }
+        />
+        <StatCard
+          label="Neo4j store"
+          value={
+            usageSplit.neo4jStoreBytes > 0
+              ? `${(usageSplit.neo4jStoreBytes / (1024 * 1024)).toFixed(2)}`
+              : "0"
+          }
+          unit="MB"
+          icon={Gauge}
+          accent="warn"
+          hint="Latest store snapshot from GET /v1/graph/stats"
+        />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
         <StatCard
           label="Requests"
           value={events.length.toLocaleString()}
@@ -134,7 +186,7 @@ export default async function DashboardPage() {
           hint={
             <span className="font-mono">
               {events.length > 0
-                ? `${Math.round(totalTokens / events.length).toLocaleString()} tok/req avg`
+                ? `${Math.round(totalTokens / Math.max(1, events.filter((e) => classifyUsageSlug(e.modelSlug) === "llm").length || 1)).toLocaleString()} tok/LLM-req avg`
                 : "no traffic yet"}
             </span>
           }
@@ -148,19 +200,30 @@ export default async function DashboardPage() {
           hint={<span className="font-mono">p95 {p95.toLocaleString()} ms</span>}
         />
         <StatCard
-          label="Estimated spend"
+          label="Estimated LLM spend"
           value={`$${(costCents / 100).toFixed(4)}`}
           icon={Coins}
           accent="warn"
-          hint="Metered from catalog rates"
+          hint="Catalog rates (STT/Neo4j use billable units on the quota ledger)"
+        />
+        <StatCard
+          label="Quota ledger"
+          value={quotaUsed.toLocaleString()}
+          icon={Layers}
+          accent="brand"
+          hint={
+            unlimited
+              ? "unlimited plan"
+              : `of ${quotaLimit.toLocaleString()} (LLM + STT units + Neo4j units)`
+          }
         />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
         <Panel className="xl:col-span-2">
           <PanelHeader
-            title="Daily token throughput"
-            description="Stacked prompt and completion tokens per UTC day"
+            title="Daily LLM token throughput"
+            description="Stacked prompt and completion tokens per UTC day (excludes STT/Neo4j)"
             actions={
               <div className="flex items-center gap-3 text-[11px] text-content-muted">
                 <span className="flex items-center gap-1.5">
@@ -176,8 +239,8 @@ export default async function DashboardPage() {
             {totalTokens === 0 ? (
               <EmptyState
                 icon={Activity}
-                title="No usage recorded yet"
-                description="Send a request to /v1/chat/completions with your API key and metrics will appear here within seconds."
+                title="No LLM usage recorded yet"
+                description="Chat completions meter tokenizer counts. Whisper meters audio seconds; Neo4j meters read/write ops."
               />
             ) : (
               <UsageChart data={chartData} />
@@ -193,8 +256,8 @@ export default async function DashboardPage() {
                 <p className="metric">{quotaUsed.toLocaleString()}</p>
                 <p className="mt-0.5 text-xs text-content-muted">
                   {unlimited
-                    ? "of unlimited tokens (usage-based)"
-                    : `of ${quotaLimit.toLocaleString()} tokens`}
+                    ? "of unlimited units (usage-based)"
+                    : `of ${quotaLimit.toLocaleString()} billable units`}
                 </p>
               </div>
               {!unlimited && <Meter value={quotaUsed} max={quotaLimit} />}
@@ -255,7 +318,7 @@ export default async function DashboardPage() {
                 <tr>
                   <th>Model</th>
                   <th className="text-right">Requests</th>
-                  <th className="text-right">Tokens</th>
+                  <th className="text-right">Units</th>
                   <th className="text-right">Share</th>
                   <th className="text-right">Spend</th>
                 </tr>

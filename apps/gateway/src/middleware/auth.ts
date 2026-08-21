@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { prisma } from "@modelforge/db";
+import { effectiveMonthlyQuota } from "@modelforge/platform";
 import { hashApiKey } from "../lib/keys.js";
 
 export interface AuthContext {
@@ -58,7 +59,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       email: apiKey.customer.email,
       planId: sub.plan.id,
       planName: sub.plan.name,
-      monthlyTokenQuota: sub.plan.monthlyTokenQuota,
+      monthlyTokenQuota: effectiveMonthlyQuota(sub.plan.monthlyTokenQuota, apiKey.customer.quotaBonusTokens),
       requestsPerMinute: sub.plan.requestsPerMinute,
       maxConcurrent: sub.plan.maxConcurrent,
       allowedModelIds: sub.plan.allowedModelIds,

@@ -105,3 +105,25 @@ export function normalizeMessages(
     return { role: m.role, content };
   });
 }
+
+/** Merge consecutive user/assistant turns so llama.cpp chat templates stay valid. */
+export function coalesceAlternatingRoles(
+  messages: Array<{ role: string; content: string }>,
+): Array<{ role: string; content: string }> {
+  const coalescable = new Set(["user", "assistant"]);
+  const output: Array<{ role: string; content: string }> = [];
+
+  for (const message of messages) {
+    const content = message.content.trim();
+    if (!content) continue;
+
+    const last = output[output.length - 1];
+    if (last && last.role === message.role && coalescable.has(message.role)) {
+      last.content = `${last.content}\n\n${message.content}`.trim();
+      continue;
+    }
+    output.push({ role: message.role, content: message.content });
+  }
+
+  return output;
+}

@@ -10,7 +10,7 @@ export const SLO_QUEUE = "slo-jobs";
 export interface UsageJob {
   customerId: string;
   apiKeyId: string;
-  hostedModelId: string;
+  hostedModelId?: string;
   modelSlug: string;
   promptTokens: number;
   completionTokens: number;

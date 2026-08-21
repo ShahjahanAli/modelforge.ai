@@ -1,0 +1,15 @@
+# ModelForge voice / STT Python deps (CPU-friendly defaults).
+# Install: python -m pip install -r requirements-voice.txt
+# Ubuntu:  python3 -m pip install --break-system-packages -r requirements-voice.txt
+#
+# Also install ffmpeg on the host (apt/brew/choco) for audio resampling / turn clipping.
+#
+# NeMo (Bhatiyali Bangla ASR) pulls PyTorch — large download. Skip that line
+# if you only need Faster-Whisper.
+#
+# Pyannote diarization needs a Hugging Face token (HF_TOKEN) and accepting the
+# model terms for pyannote/speaker-diarization-community-1 (and related gated repos).
+
+faster-whisper>=1.1.0
+nemo_toolkit[asr]>=2.0.0
+pyannote.audio>=4.0.0

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chatCompletionRequestSchema,
+  coalesceAlternatingRoles,
   normalizeMessages,
   buildCompletionResponse,
   mapEngineError,
@@ -53,6 +54,28 @@ describe("normalizeMessages", () => {
       },
     ]);
     expect(out[0]?.content).toBe("a\nb");
+  });
+});
+
+describe("coalesceAlternatingRoles", () => {
+  it("merges consecutive user messages", () => {
+    const out = coalesceAlternatingRoles([
+      { role: "system", content: "You are helpful." },
+      { role: "user", content: "Transcript text" },
+      { role: "user", content: "Describe it for me" },
+    ]);
+    expect(out).toHaveLength(2);
+    expect(out[1]?.content).toContain("Transcript text");
+    expect(out[1]?.content).toContain("Describe it for me");
+  });
+
+  it("preserves alternating user/assistant turns", () => {
+    const out = coalesceAlternatingRoles([
+      { role: "user", content: "Hi" },
+      { role: "assistant", content: "Hello" },
+      { role: "user", content: "Bye" },
+    ]);
+    expect(out).toHaveLength(3);
   });
 });
 

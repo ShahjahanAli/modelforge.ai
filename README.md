@@ -53,6 +53,55 @@ do not need a C++ compiler or CUDA toolchain.
   and pluggable payment adapters
 - **CPU-first defaults** -- mmap, physical-core thread sizing, and conservative
   per-model concurrency
+- **Shared services for client apps** -- ASR/LLM APIs plus Neo4j and MinIO are
+  owned by ModelForge; products like **Anusandhan** consume them as clients
+
+## Client apps (e.g. Anusandhan)
+
+ModelForge is the **provider**. Investigative / product UIs are **clients**.
+
+| Concern | ModelForge | Anusandhan (client) |
+|---|---|---|
+| Chat / completions | `/v1/chat/completions` | Calls with API key |
+| Voice / ASR | `/v1/voice/analyze` | Uploads audio; stores transcript metadata |
+| Graph DB | **Neo4j** (hosted here) | Reads/writes via ModelForge Neo4j |
+| Object storage | **MinIO** (hosted here) | Stores object keys; files live in ModelForge MinIO |
+| Domain cases / investigator UX | — | Anusandhan Postgres + UI |
+
+Local day-to-day: run ModelForge with `pnpm dev` (or `npm run dev`). Clients point at `GATEWAY_INTERNAL_URL` / `MODELFORGE_BASE_URL`.
+
+### Neo4j
+
+| Environment | How to run Neo4j |
+|---|---|
+| **Local Windows / Mac** | **[Neo4j Desktop](https://neo4j.com/download/)** — create a local DBMS, set password to match `.env` (`NEO4J_PASSWORD`), start it, use Bolt `bolt://localhost:7687` |
+| **Ubuntu server** | Install the **Neo4j Community package** (apt), enable the systemd service — not Desktop |
+
+Ubuntu (production / lab server):
+
+```bash
+# Official Neo4j apt repository (Community)
+wget -O - https://debian.neo4j.com/neotechnology.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/neo4j.gpg
+echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable 5" | sudo tee /etc/apt/sources.list.d/neo4j.list
+sudo apt update
+sudo apt install -y neo4j
+sudo systemctl enable --now neo4j
+
+# Set initial password (once), then put the same value in ModelForge .env
+sudo neo4j-admin dbms set-initial-password 'modelforge'
+```
+
+Match ModelForge `.env`:
+
+```bash
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=modelforge
+```
+
+### MinIO
+
+Hosted by ModelForge for client audio/objects. Locally optional until a client needs uploads to object storage. On Ubuntu, run the MinIO server binary under systemd (or your preferred process manager) and point `MINIO_*` in `.env` at it (`MINIO_ENDPOINT=localhost:9010` by default so it does not clash with gRPC on `9002`).
 
 ## System architecture
 
@@ -230,9 +279,14 @@ scripts/                  Binary fetch, model scan, diagnostics, E2E, benchmark
 
 - Node.js **20+**
 - pnpm **10+**
-- PostgreSQL, either local or through Docker
+- PostgreSQL (local install — use your normal `pnpm dev` loop)
 - A compatible `.gguf` model, or network access to download one from Hugging Face
-- Redis is recommended for production but optional for local development
+- Redis is recommended for production but optional for local development (`REDIS_ENABLED=false`)
+- **Neo4j** when graph features / Anusandhan graph are needed:
+  - Desktop locally, or
+  - Community **apt package** on Ubuntu (see [Client apps](#client-apps-eg-anusandhan))
+- **MinIO** when object storage for clients is needed (optional for plain chat/voice)
+- **Python 3.10+**, `ffmpeg`, and `pip install -r requirements-voice.txt` when using the voice/STT pipeline (Faster-Whisper + optional NeMo Bangla ASR)
 
 The default `llama-server` backend does **not** require Rust, CMake, Clang,
 Visual Studio Build Tools, CUDA, or a system-wide llama.cpp installation.
@@ -259,6 +313,11 @@ pnpm db:seed
 
 # 5. Download the official prebuilt llama.cpp CPU binaries
 pnpm llama:fetch
+
+# 5b. (Voice/STT) Python ASR runtime — Faster-Whisper + NeMo Bangla
+#     Also install ffmpeg (apt/brew/choco) if not already present.
+python -m pip install -r requirements-voice.txt
+# Ubuntu: python3 -m pip install --break-system-packages -r requirements-voice.txt
 
 # 6. Start the gateway and control plane
 # Frees GATEWAY_PORT / WEB_PORT / GRPC_PORT first if something is still bound
@@ -398,6 +457,115 @@ produce an empty `content` field even though reasoning tokens were generated.
 All generated tokens count toward metering. The chat UI collapses inline
 thought tags so operators can inspect reasoning without burying the answer.
 
+## Voice pipeline (Phase 1)
+
+Phase 1 supports batch voice uploads for Bangla analysis:
+
+1. Browser uploads an audio file to `POST /api/voice/analyze`
+2. Web route proxies to `POST /v1/voice/analyze` with dashboard API auth
+3. Gateway stores audio under `VOICE_UPLOAD_DIR`
+4. STT provider transcribes (Faster-Whisper **or** NeMo Bangla Conformer)
+5. Transcript is analyzed through the existing LLM chat pipeline
+
+Required runtime setup:
+
+```bash
+# Installs faster-whisper and nemo_toolkit[asr] (see requirements-voice.txt)
+python -m pip install -r requirements-voice.txt
+# Ubuntu: python3 -m pip install --break-system-packages -r requirements-voice.txt
+# ffmpeg must be on PATH (Ubuntu: sudo apt install -y ffmpeg)
+```
+
+Install / switch models from **Admin → Infra** (writes `data/voice/runtime.json`). Whisper remains the multilingual default; NeMo [`kazalbrur/bangla-stt-conformer-120m-dialects`](https://huggingface.co/kazalbrur/bangla-stt-conformer-120m-dialects) is stronger on Bangladeshi dialects (CC-BY-NC-4.0).
+
+The admin **Infrastructure** page shows a live STT status card powered by:
+
+- `GET /internal/voice/status` on the gateway
+- `GET /api/admin/engine` on the web app for admin-safe polling
+
+Enable and tune in `.env`:
+
+```bash
+VOICE_ENABLED=true
+STT_PROVIDER=faster-whisper
+# Leave empty or "auto" for language auto-detection; set "bn" to prefer Bangla.
+STT_LANGUAGE=
+STT_PYTHON_BIN=python3
+STT_FASTER_WHISPER_SCRIPT=scripts/faster-whisper-transcribe.py
+STT_NEMO_SCRIPT=scripts/nemo-asr-transcribe.py
+STT_NEMO_MODEL=kazalbrur/bangla-stt-conformer-120m-dialects
+STT_NEMO_DEVICE=cpu
+VOICE_UPLOAD_DIR=./data/audio
+VOICE_MAX_UPLOAD_MB=20
+VOICE_RATE_LIMIT_PER_HOUR=20
+VOICE_RETENTION_HOURS=24
+# Speaker diarization (turn-based ASR). Needs pyannote.audio + HF_TOKEN and accepted model terms.
+DIARIZATION_ENABLED=false
+DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
+DIARIZATION_DEVICE=cpu
+DIARIZATION_SCRIPT=scripts/pyannote-diarize.py
+# DIARIZATION_MIN_SPEAKERS=2
+# DIARIZATION_MAX_SPEAKERS=2
+# HF_TOKEN=hf_...
+```
+
+Rollout checklist:
+
+- Enable `VOICE_ENABLED=true` for a staging tenant first
+- Confirm transcript accuracy on Bangla dialect samples
+- Watch gateway logs for `voice.analyzed` latency and volume
+- Verify hourly upload cap and max-upload errors behave as expected
+- Enable for broader plans once latency/cost targets are met
+
+### Production voice setup
+
+On Ubuntu production hosts, install the Python runtime once:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip ffmpeg
+python3 -m pip install --break-system-packages -r requirements-voice.txt
+```
+
+That installs **Faster-Whisper** and **NeMo ASR** (`nemo_toolkit[asr]`, used for Bhatiyali Bangla dialects). Pre-download models so first use is not delayed:
+
+```bash
+# Whisper (default multilingual path)
+python3 - <<'PY'
+from faster_whisper import WhisperModel
+WhisperModel("small", device="cpu", compute_type="int8")
+print("Faster-Whisper model is cached and ready.")
+PY
+
+# Optional: NeMo Bhatiyali (Bangla dialects) — large first download
+python3 scripts/nemo-asr-transcribe.py --preload --model kazalbrur/bangla-stt-conformer-120m-dialects --device cpu
+```
+
+Then make sure your server `.env` contains:
+
+```bash
+VOICE_ENABLED=true
+VOICE_UPLOAD_DIR=/var/www/modelforge.ai/data/audio
+STT_PROVIDER=faster-whisper
+# Leave empty or "auto" for language auto-detection; set "bn" to prefer Bangla.
+STT_LANGUAGE=
+STT_PYTHON_BIN=python3
+STT_FASTER_WHISPER_SCRIPT=/var/www/modelforge.ai/scripts/faster-whisper-transcribe.py
+STT_FASTER_WHISPER_MODEL=small
+STT_FASTER_WHISPER_DEVICE=cpu
+STT_FASTER_WHISPER_COMPUTE_TYPE=int8
+STT_NEMO_SCRIPT=/var/www/modelforge.ai/scripts/nemo-asr-transcribe.py
+STT_NEMO_MODEL=kazalbrur/bangla-stt-conformer-120m-dialects
+STT_NEMO_DEVICE=cpu
+```
+
+After restarting PM2, verify the admin **Infrastructure** page reports:
+
+- Voice pipeline: `ENABLED`
+- Python runtime: `AVAILABLE`
+- STT packages: Whisper/NeMo status as installed
+- Configured model: your selected model (or install/activate from the Infra UI)
+
 ## Inference backends
 
 | Backend | Compiler required | Recommended use |
@@ -507,7 +675,29 @@ npm i -g pnpm pm2
 
 # PostgreSQL and Redis
 sudo apt install -y postgresql redis-server
+
+# Neo4j Community (graph for ModelForge clients such as Anusandhan)
+wget -O - https://debian.neo4j.com/neotechnology.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/neo4j.gpg
+echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable 5" | sudo tee /etc/apt/sources.list.d/neo4j.list
+sudo apt update
+sudo apt install -y neo4j
+sudo systemctl enable --now neo4j
+# sudo neo4j-admin dbms set-initial-password 'YOUR_NEO4J_PASSWORD'
 ```
+
+Set in `/var/www/modelforge.ai/.env` (same password you configured):
+
+```bash
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=YOUR_NEO4J_PASSWORD
+MINIO_ENDPOINT=localhost:9010
+MINIO_ACCESS_KEY=...
+MINIO_SECRET_KEY=...
+MINIO_BUCKET=modelforge-audio
+```
+
+> **Note:** On Ubuntu use the **Neo4j package + systemd**, not Neo4j Desktop. Desktop is for local Windows/Mac development only.
 
 ### 2. Clone, install, and build
 
@@ -520,6 +710,10 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 nano .env    # DATABASE_URL, JWT_SECRET, AUTH_SECRET, REDIS_URL, etc.
 
+# Install Python STT runtime for voice uploads (Whisper + NeMo Bangla)
+sudo apt install -y python3 python3-pip ffmpeg
+python3 -m pip install --break-system-packages -r requirements-voice.txt
+
 # Generate Prisma client, run migrations, seed
 pnpm db:generate
 pnpm db:deploy
@@ -530,6 +724,16 @@ pnpm llama:fetch
 
 # Build all packages and apps
 pnpm build
+```
+
+If you want the Whisper model downloaded before the first user upload:
+
+```bash
+python3 - <<'PY'
+from faster_whisper import WhisperModel
+WhisperModel("small", device="cpu", compute_type="int8")
+print("Voice model cache ready.")
+PY
 ```
 
 ### 3. Start with PM2

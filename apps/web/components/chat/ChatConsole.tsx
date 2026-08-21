@@ -6,6 +6,8 @@ import {
   Check,
   ChevronDown,
   Copy,
+  FileAudio,
+  LoaderCircle,
   Send,
   Sparkles,
   Square,
@@ -92,6 +94,12 @@ function ReasoningBlock({
 }
 
 const PIN_TO_BOTTOM_PX = 96;
+const VOICE_STEPS = [
+  { id: "uploading", label: "Upload audio", pct: 25 },
+  { id: "transcribing", label: "Speech to text", pct: 65 },
+  { id: "analyzing", label: "LLM analysis", pct: 90 },
+  { id: "done", label: "Completed", pct: 100 },
+] as const;
 
 export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps) {
   const compact = variant === "widget";
@@ -100,10 +108,35 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pinnedToBottomRef = useRef(true);
   const messageCountRef = useRef(0);
-  const { messages, input, setInput, streaming, send, stop, knowledgeBases, knowledgeBaseId } = chat;
+  const {
+    messages,
+    input,
+    setInput,
+    streaming,
+    send,
+    stop,
+    knowledgeBases,
+    knowledgeBaseId,
+    voice,
+    analyzeVoice,
+    rerunTranscript,
+  } = chat;
   const disabled = models.length === 0;
   const ragOn = knowledgeBaseId !== "off" && knowledgeBases.length > 0;
   const suggestions = ragOn ? GROUNDED_SUGGESTIONS : SUGGESTIONS;
+  const [voicePrompt, setVoicePrompt] = useState("");
+  const [editableTranscript, setEditableTranscript] = useState("");
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const voiceStepIndex = Math.max(
+    0,
+    VOICE_STEPS.findIndex((step) => step.id === voice.step),
+  );
+  const voiceProgress =
+    voice.status === "idle"
+      ? 0
+      : voice.status === "error"
+        ? VOICE_STEPS[voiceStepIndex]?.pct ?? 25
+        : VOICE_STEPS[voiceStepIndex]?.pct ?? 0;
 
   function isNearBottom(el: HTMLDivElement): boolean {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_TO_BOTTOM_PX;
@@ -140,6 +173,20 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
     await navigator.clipboard.writeText(answer || message.content);
     setCopiedId(message.id);
     window.setTimeout(() => setCopiedId(null), 1500);
+  }
+
+  useEffect(() => {
+    if (voice.transcript) setEditableTranscript(voice.transcript);
+  }, [voice.transcript]);
+
+  async function handleVoiceUpload(file: File | null) {
+    if (!file || disabled) return;
+    setVoiceBusy(true);
+    try {
+      await analyzeVoice(file, voicePrompt);
+    } finally {
+      setVoiceBusy(false);
+    }
   }
 
   return (
@@ -307,6 +354,97 @@ export function ChatConsole({ models, chat, variant = "page" }: ChatConsoleProps
             compact ? "" : "max-w-3xl"
           }`}
         >
+          <div className="mb-2 rounded-xl border border-line bg-surface-0/50 p-2.5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-content-secondary">Voice to Text & Analysis</p>
+              <span className="text-[10px] text-content-muted">
+                {voice.status === "idle" ? "Ready" : voice.status}
+              </span>
+            </div>
+            <div className="mb-2">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    voice.status === "error" ? "bg-danger-500" : "bg-brand-500"
+                  }`}
+                  style={{ width: `${voiceProgress}%` }}
+                />
+              </div>
+              <div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-content-muted sm:grid-cols-4">
+                {VOICE_STEPS.map((step, index) => {
+                  const active =
+                    voice.status !== "idle" &&
+                    voice.status !== "error" &&
+                    voice.status !== "done" &&
+                    index <= voiceStepIndex;
+                  const done = voice.status === "done" && index <= voiceStepIndex;
+                  const failed = voice.status === "error" && index === voiceStepIndex;
+                  return (
+                    <span key={step.id} className="inline-flex items-center gap-1">
+                      <span
+                        className={`size-1.5 rounded-full ${
+                          failed
+                            ? "bg-danger-500"
+                            : done
+                              ? "bg-ok-500"
+                              : active
+                                ? "bg-brand-500"
+                                : "bg-content-muted/40"
+                        }`}
+                      />
+                      {step.label}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="btn-ghost cursor-pointer !rounded-xl">
+                {voiceBusy || voice.status === "transcribing" || voice.status === "analyzing" ? (
+                  <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+                ) : (
+                  <FileAudio className="size-3.5" aria-hidden />
+                )}
+                Upload audio
+                <input
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={(event) => void handleVoiceUpload(event.target.files?.[0] ?? null)}
+                  disabled={disabled || voiceBusy || streaming}
+                />
+              </label>
+              <input
+                className="min-w-[16rem] flex-1 rounded-lg border border-line bg-surface-1 px-2 py-1 text-xs text-content-primary outline-none"
+                value={voicePrompt}
+                onChange={(event) => setVoicePrompt(event.target.value)}
+                placeholder="Optional: analysis instruction (leave blank for transcript only)"
+              />
+            </div>
+            {voice.error && <p className="mt-2 text-xs text-danger-600">{voice.error}</p>}
+            {streaming && (
+              <p className="mt-2 text-xs text-content-muted">
+                Finish or stop the current chat response before uploading voice audio.
+              </p>
+            )}
+            {editableTranscript && (
+              <div className="mt-2 space-y-2">
+                <textarea
+                  className="max-h-32 min-h-20 w-full resize-y rounded-lg border border-line bg-surface-1 px-2 py-1.5 text-xs text-content-primary outline-none"
+                  value={editableTranscript}
+                  onChange={(event) => setEditableTranscript(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn-secondary !rounded-xl"
+                  onClick={() => void rerunTranscript(editableTranscript, voicePrompt)}
+                  disabled={!editableTranscript.trim() || !voicePrompt.trim() || streaming}
+                >
+                  Analyze edited transcript
+                </button>
+              </div>
+            )}
+          </div>
           <textarea
             className={`w-full resize-none bg-transparent px-2 py-1.5 text-sm text-content-primary outline-none placeholder:text-content-muted ${
               compact ? "max-h-28 min-h-11" : "max-h-40 min-h-16"

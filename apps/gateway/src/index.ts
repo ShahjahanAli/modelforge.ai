@@ -8,6 +8,7 @@ import { ensureSigningKey } from "./lib/receipts.js";
 import { hydrateArmedCoreTraces } from "./lib/coreTrace.js";
 import { restoreHuggingFaceDownloads } from "./lib/huggingFace.js";
 import { reconcileModelRegistry, shutdownEngine } from "./engine/index.js";
+import { closeNeo4j } from "./lib/neo4j.js";
 import { internalRouter } from "./routes/internal.js";
 import { v1Router } from "./routes/v1.js";
 
@@ -36,6 +37,18 @@ app.use("/v1", v1Router);
 app.use("/internal", internalRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const anyErr = err as { type?: string; status?: number; message?: string; limit?: number };
+  if (anyErr?.type === "entity.too.large" || anyErr?.status === 413) {
+    const limitMb = anyErr.limit ? Math.round(anyErr.limit / (1024 * 1024)) : undefined;
+    return res.status(413).json({
+      error: {
+        type: "payload_too_large",
+        message: limitMb
+          ? `Request body exceeds ${limitMb}MB (raise VOICE_MAX_UPLOAD_MB and retry)`
+          : "Request body too large",
+      },
+    });
+  }
   console.error(err);
   res.status(500).json({ error: { type: "server_error", message: "Internal error" } });
 });
@@ -71,6 +84,7 @@ async function shutdown() {
   await shutdownEngine().catch((error: unknown) => {
     console.warn("Engine shutdown was incomplete:", error);
   });
+  await closeNeo4j().catch(() => undefined);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 10_000).unref();
 }

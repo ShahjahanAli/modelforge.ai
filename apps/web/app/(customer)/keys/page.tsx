@@ -4,6 +4,7 @@ import { prisma } from "@modelforge/db";
 import { KeyRound } from "lucide-react";
 import { authOptions } from "@/lib/auth";
 import { CreateKeyForm } from "@/components/CreateKeyForm";
+import { ExistingKeyCopy } from "@/components/CopyApiKey";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Panel, PanelHeader } from "@/components/ui/Panel";
 import { Badge } from "@/components/ui/Badge";
@@ -26,7 +27,7 @@ export default async function KeysPage() {
       <PageHeader
         eyebrow="Credentials"
         title="API keys"
-        description="Bearer tokens for the OpenAI-compatible gateway. Rotate regularly and scope one key per deployment."
+        description="Bearer tokens for the OpenAI-compatible gateway. Rotate regularly and scope one key per deployment (e.g. Anusandhan)."
         actions={
           <Badge tone={activeCount > 0 ? "ok" : "neutral"} dot>
             {activeCount} active
@@ -37,7 +38,10 @@ export default async function KeysPage() {
       <CreateKeyForm />
 
       <Panel>
-        <PanelHeader title="Existing keys" description={`${keys.length} total`} />
+        <PanelHeader
+          title="Existing keys"
+          description={`${keys.length} total · Copy full key if this browser still remembers it; otherwise copy the prefix or generate a new key`}
+        />
         {keys.length === 0 ? (
           <EmptyState
             icon={KeyRound}
@@ -72,14 +76,19 @@ export default async function KeysPage() {
                       </Badge>
                     </td>
                     <td className="text-right">
-                      {!key.revokedAt && (
-                        <form action={revokeKeyAction} className="inline-flex">
-                          <input type="hidden" name="id" value={key.id} />
-                          <button className="btn-danger" type="submit">
-                            Revoke
-                          </button>
-                        </form>
-                      )}
+                      <div className="inline-flex items-center gap-2">
+                        {!key.revokedAt && (
+                          <ExistingKeyCopy keyId={key.id} keyPrefix={key.keyPrefix} />
+                        )}
+                        {!key.revokedAt && (
+                          <form action={revokeKeyAction} className="inline-flex">
+                            <input type="hidden" name="id" value={key.id} />
+                            <button className="btn-danger" type="submit">
+                              Revoke
+                            </button>
+                          </form>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

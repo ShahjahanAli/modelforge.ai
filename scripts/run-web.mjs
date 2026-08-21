@@ -15,7 +15,15 @@ const nextBin = require.resolve("next/dist/bin/next");
 
 console.log(`[web] next ${mode} on :${port}`);
 
-const child = spawn(process.execPath, [nextBin, mode, "-p", port, "-H", "0.0.0.0"], {
+// Next 16 defaults `dev` to Turbopack; its HMR can panic on Windows after rapid
+ // edits ("EcmascriptMergedChunkVersion cell no longer exists"). Use webpack for
+ // a stable local loop; production `next build` is unchanged.
+const args =
+  mode === "dev"
+    ? [nextBin, "dev", "--webpack", "-p", port, "-H", "0.0.0.0"]
+    : [nextBin, "start", "-p", port, "-H", "0.0.0.0"];
+
+const child = spawn(process.execPath, args, {
   cwd: webDir,
   stdio: "inherit",
   env: process.env,

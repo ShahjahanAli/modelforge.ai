@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import { prisma } from "@modelforge/db";
 import {
   ApiError,
@@ -7,9 +7,12 @@ import {
   chatCompletionRequestSchema,
   mapEngineError,
   normalizeMessages,
+  coalesceAlternatingRoles,
   toSse,
 } from "@modelforge/engine";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { writeFile } from "node:fs/promises";
 import { generateStream, mapEngineFailure } from "../engine/index.js";
 import {
   createInferenceRequest,
@@ -33,10 +36,28 @@ import {
   type RetrievalResult,
 } from "../lib/retrieval.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { rateLimitMiddleware } from "../middleware/quota.js";
+import { rateLimitMiddleware, rateLimitRpmMiddleware } from "../middleware/quota.js";
 import { bumpQuotaCache, quotaMiddleware } from "../middleware/quotaCheck.js";
+import {
+  audioDurationSec,
+  sttBillableUnits,
+} from "../lib/metering.js";
+import { neo4jConfigured, neo4jStoreStats, runCypher } from "../lib/neo4j.js";
+import {
+  buildVoiceAnalysisPrompt,
+  buildVoiceAnalysisSystemPrompt,
+  cleanupOldVoiceUploads,
+  createSttProvider,
+  ensureVoiceUploadDir,
+  ensureSttScript,
+  resolveSttLanguageHint,
+  resolveVoiceEnv,
+  resolveVoicePath,
+} from "../lib/voice/index.js";
+import { toPublicTranscript, transcribeWithDiarization } from "../lib/voice/diarize.js";
 
 export const v1Router = Router();
+const voiceWindow = new Map<string, { count: number; resetAt: number }>();
 
 v1Router.get("/models", authMiddleware, async (req, res) => {
   const allowed = new Set(req.auth!.allowedModelIds);
@@ -114,6 +135,412 @@ v1Router.get("/usage/receipts/:requestId", authMiddleware, async (req, res) => {
 });
 
 v1Router.post(
+  "/voice/analyze",
+  authMiddleware,
+  rateLimitRpmMiddleware,
+  (req, res, next) => {
+    const maxUploadMb = Math.max(1, Number(process.env.VOICE_MAX_UPLOAD_MB ?? 50));
+    // Parser limit must match (or exceed) VOICE_MAX_UPLOAD_MB or Express rejects before the handler.
+    express.raw({ type: "*/*", limit: `${maxUploadMb}mb` })(req, res, next);
+  },
+  async (req, res) => {
+    try {
+      if (process.env.VOICE_ENABLED === "false") {
+        return res.status(403).json({
+          error: { type: "feature_disabled", message: "Voice pipeline is disabled" },
+        });
+      }
+      const audioBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+      if (!audioBuffer.length) {
+        return res.status(400).json({
+          error: { type: "invalid_request", message: "Missing audio binary body" },
+        });
+      }
+      const maxUploadMb = Math.max(1, Number(process.env.VOICE_MAX_UPLOAD_MB ?? 50));
+      if (audioBuffer.length > maxUploadMb * 1024 * 1024) {
+        return res.status(413).json({
+          error: { type: "payload_too_large", message: `Audio exceeds ${maxUploadMb}MB` },
+        });
+      }
+      const mimeType = String(req.header("x-audio-mime") ?? req.header("content-type") ?? "");
+      const allowed = new Set([
+        "audio/webm",
+        "audio/wav",
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/mp4",
+        "audio/x-m4a",
+        "audio/ogg",
+      ]);
+      if (mimeType && !allowed.has(mimeType)) {
+        return res.status(415).json({
+          error: { type: "unsupported_media_type", message: `Unsupported audio type: ${mimeType}` },
+        });
+      }
+
+      const hourMs = 60 * 60 * 1000;
+      const rate = Number(process.env.VOICE_RATE_LIMIT_PER_HOUR ?? 20);
+      const now = Date.now();
+      const key = `${req.auth!.customerId}:voice`;
+      const current = voiceWindow.get(key);
+      if (!current || current.resetAt <= now) {
+        voiceWindow.set(key, { count: 1, resetAt: now + hourMs });
+      } else if (current.count >= rate) {
+        return res.status(429).json({
+          error: { type: "rate_limit_exceeded", message: "Voice upload hourly limit exceeded" },
+        });
+      } else {
+        current.count += 1;
+      }
+
+      const uploadDir = await ensureVoiceUploadDir(process.env.VOICE_UPLOAD_DIR ?? "./data/audio");
+      const whisperScript = resolveVoicePath(
+        process.env.STT_FASTER_WHISPER_SCRIPT ?? "scripts/faster-whisper-transcribe.py",
+      );
+      const nemoScript = resolveVoicePath(
+        process.env.STT_NEMO_SCRIPT ?? "scripts/nemo-asr-transcribe.py",
+      );
+      const deleted = await cleanupOldVoiceUploads(
+        uploadDir,
+        Number(process.env.VOICE_RETENTION_HOURS ?? 24),
+      );
+      if (deleted > 0) {
+        console.log(`[voice.cleanup] removed=${deleted}`);
+      }
+
+      const fileNameRaw = String(req.header("x-audio-filename") ?? "audio.webm");
+      const fileNameSafe = fileNameRaw.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const storedPath = path.join(uploadDir, `${Date.now()}-${randomUUID()}-${fileNameSafe}`);
+      await writeFile(storedPath, audioBuffer);
+
+      const transcribeStarted = Date.now();
+      const sttLanguageHint = resolveSttLanguageHint(process.env.STT_LANGUAGE);
+      const voiceEnv = await resolveVoiceEnv({
+        VOICE_ENABLED: process.env.VOICE_ENABLED !== "false",
+        VOICE_UPLOAD_DIR: uploadDir,
+        VOICE_MAX_UPLOAD_MB: maxUploadMb,
+        VOICE_RETENTION_HOURS: Number(process.env.VOICE_RETENTION_HOURS ?? 24),
+        VOICE_RATE_LIMIT_PER_HOUR: rate,
+        STT_PROVIDER: process.env.STT_PROVIDER === "nemo" ? "nemo" : "faster-whisper",
+        STT_LANGUAGE: process.env.STT_LANGUAGE ?? "",
+        STT_FASTER_WHISPER_MODEL: process.env.STT_FASTER_WHISPER_MODEL ?? "small",
+        STT_FASTER_WHISPER_DEVICE:
+          process.env.STT_FASTER_WHISPER_DEVICE === "cuda" ? "cuda" : "cpu",
+        STT_FASTER_WHISPER_COMPUTE_TYPE: process.env.STT_FASTER_WHISPER_COMPUTE_TYPE ?? "int8",
+        STT_FASTER_WHISPER_BEAM_SIZE: Number(process.env.STT_FASTER_WHISPER_BEAM_SIZE ?? 5),
+        STT_FASTER_WHISPER_BEST_OF: Number(process.env.STT_FASTER_WHISPER_BEST_OF ?? 5),
+        STT_FASTER_WHISPER_TEMPERATURE: Number(process.env.STT_FASTER_WHISPER_TEMPERATURE ?? 0),
+        STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD: Number(
+          process.env.STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD ?? 0.6,
+        ),
+        STT_PYTHON_BIN: process.env.STT_PYTHON_BIN ?? "python3",
+        STT_FASTER_WHISPER_SCRIPT: whisperScript,
+        STT_NEMO_MODEL:
+          process.env.STT_NEMO_MODEL ?? "kazalbrur/bangla-stt-conformer-120m-dialects",
+        STT_NEMO_DEVICE: process.env.STT_NEMO_DEVICE === "cuda" ? "cuda" : "cpu",
+        STT_NEMO_SCRIPT: nemoScript,
+        DIARIZATION_ENABLED: process.env.DIARIZATION_ENABLED === "true",
+        DIARIZATION_PROVIDER: "pyannote",
+        DIARIZATION_MODEL:
+          process.env.DIARIZATION_MODEL ?? "pyannote/speaker-diarization-community-1",
+        DIARIZATION_DEVICE: process.env.DIARIZATION_DEVICE === "cuda" ? "cuda" : "cpu",
+        DIARIZATION_SCRIPT:
+          process.env.DIARIZATION_SCRIPT ?? "scripts/pyannote-diarize.py",
+        DIARIZATION_MIN_SPEAKERS: process.env.DIARIZATION_MIN_SPEAKERS
+          ? Number(process.env.DIARIZATION_MIN_SPEAKERS)
+          : undefined,
+        DIARIZATION_MAX_SPEAKERS: process.env.DIARIZATION_MAX_SPEAKERS
+          ? Number(process.env.DIARIZATION_MAX_SPEAKERS)
+          : undefined,
+      });
+      ensureSttScript(voiceEnv);
+      const stt = createSttProvider(voiceEnv);
+
+      const transcript = await transcribeWithDiarization({
+        audioPath: storedPath,
+        stt,
+        language: sttLanguageHint,
+        diarization: {
+          enabled: voiceEnv.DIARIZATION_ENABLED,
+          pythonBin: voiceEnv.STT_PYTHON_BIN,
+          scriptPath: voiceEnv.DIARIZATION_SCRIPT,
+          model: voiceEnv.DIARIZATION_MODEL,
+          device: voiceEnv.DIARIZATION_DEVICE,
+          minSpeakers: voiceEnv.DIARIZATION_MIN_SPEAKERS,
+          maxSpeakers: voiceEnv.DIARIZATION_MAX_SPEAKERS,
+        },
+      });
+      const publicTranscript = toPublicTranscript(transcript);
+      const transcribeMs = Date.now() - transcribeStarted;
+
+      // Whisper/faster-whisper is ASR (ML), not an LLM — bill by audio seconds → ledger units.
+      const sttSlug = `stt:${transcript.model || process.env.STT_FASTER_WHISPER_MODEL || "faster-whisper"}`;
+      const durationSec = audioDurationSec({
+        segments: transcript.segments,
+        text: transcript.text,
+        bytes: audioBuffer.length,
+      });
+      const sttUnits = sttBillableUnits(durationSec);
+      const sttExecution = await createInferenceRequest({
+        customerId: req.auth!.customerId,
+        apiKeyId: req.auth!.apiKeyId,
+        requestedModelSlug: sttSlug,
+        stream: false,
+      });
+      await startAttempt(sttExecution.id, {
+        backend: "faster-whisper",
+        modelSlug: sttSlug,
+        attemptNo: 1,
+      });
+      await finalizeAndMeter({
+        executionId: sttExecution.id,
+        auth: req.auth!,
+        modelSlug: sttSlug,
+        promptTokens: sttUnits,
+        completionTokens: 0,
+        latencyMs: transcribeMs,
+        ttftMs: null,
+        generationMs: transcribeMs,
+        queueMs: 0,
+        finishReason: "stop",
+        requestId: req.requestId ?? sttExecution.id,
+        reservedTokens: 0,
+        costMicros: 0n,
+      });
+      console.log(
+        JSON.stringify({
+          event: "stt.metered",
+          customerId: req.auth!.customerId,
+          model: sttSlug,
+          durationSec: Number(durationSec.toFixed(2)),
+          billableUnits: sttUnits,
+        }),
+      );
+
+      if (voiceEnv.DIARIZATION_ENABLED) {
+        const diarizeSlug = `diarize:${voiceEnv.DIARIZATION_MODEL}`;
+        const diarizeUnits = Math.max(1, Math.ceil(durationSec * 5));
+        const diarizeExecution = await createInferenceRequest({
+          customerId: req.auth!.customerId,
+          apiKeyId: req.auth!.apiKeyId,
+          requestedModelSlug: diarizeSlug,
+          stream: false,
+        });
+        await startAttempt(diarizeExecution.id, {
+          backend: "pyannote",
+          modelSlug: diarizeSlug,
+          attemptNo: 1,
+        });
+        await finalizeAndMeter({
+          executionId: diarizeExecution.id,
+          auth: req.auth!,
+          modelSlug: diarizeSlug,
+          promptTokens: diarizeUnits,
+          completionTokens: 0,
+          latencyMs: transcribeMs,
+          ttftMs: null,
+          generationMs: transcribeMs,
+          queueMs: 0,
+          finishReason: "stop",
+          requestId: req.requestId ?? diarizeExecution.id,
+          reservedTokens: 0,
+          costMicros: 0n,
+        });
+      }
+
+      const userAnalysisPrompt =
+        typeof req.query.prompt === "string" ? req.query.prompt.trim() : "";
+      const analysisPrompt = userAnalysisPrompt
+        ? buildVoiceAnalysisPrompt(transcript, userAnalysisPrompt)
+        : null;
+
+      let analysis = "";
+      if (analysisPrompt) {
+        const requestedModel = String(req.query.model ?? "auto");
+        const upstream = await fetch(`http://127.0.0.1:${process.env.GATEWAY_PORT ?? "9000"}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: req.header("authorization") ?? "",
+            "content-type": "application/json",
+            "x-modelforge-orchestration": "voice-analyze",
+          },
+          body: JSON.stringify({
+            model: requestedModel,
+            stream: false,
+            max_tokens: Number(req.query.max_tokens ?? 1200),
+            temperature: 0.2,
+            messages: [
+              {
+                role: "system",
+                content: buildVoiceAnalysisSystemPrompt(transcript),
+              },
+              { role: "user", content: analysisPrompt },
+            ],
+          }),
+        });
+        const analysisJson = (await upstream.json().catch(() => null)) as
+          | { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } }
+          | null;
+        if (!upstream.ok) {
+          return res.status(upstream.status).json({
+            error: {
+              type: "analysis_failed",
+              message: analysisJson?.error?.message ?? "Transcript analysis failed",
+            },
+          });
+        }
+        analysis = analysisJson?.choices?.[0]?.message?.content ?? "";
+      }
+      console.log(
+        JSON.stringify({
+          event: "voice.analyzed",
+          customerId: req.auth!.customerId,
+          requestId: req.requestId,
+          bytes: audioBuffer.length,
+          transcribeMs,
+          transcriptChars: transcript.text.length,
+          analysisChars: analysis.length,
+          provider: transcript.provider,
+          model: transcript.model,
+          speakers: publicTranscript.speakers,
+          segmentCount: publicTranscript.segments.length,
+          diarization: voiceEnv.DIARIZATION_ENABLED,
+        }),
+      );
+      return res.json({
+        transcript: publicTranscript,
+        analysis,
+        metrics: {
+          transcribeMs,
+          audioDurationSec: Number(durationSec.toFixed(2)),
+          sttBillableUnits: sttUnits,
+          diarizationEnabled: voiceEnv.DIARIZATION_ENABLED,
+          speakerCount: publicTranscript.speakers.length,
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({
+        error: {
+          type: "voice_pipeline_error",
+          message: error instanceof Error ? error.message : "Voice pipeline failed",
+        },
+      });
+    }
+  },
+);
+
+/** Neo4j graph API — ModelForge-hosted; meters read/write/storage for the API key owner. */
+v1Router.get("/graph/stats", authMiddleware, rateLimitRpmMiddleware, async (req, res) => {
+  try {
+    if (!neo4jConfigured()) {
+      return res.status(503).json({
+        error: { type: "service_unavailable", message: "Neo4j is not configured on ModelForge" },
+      });
+    }
+    const stats = await neo4jStoreStats();
+    const execution = await createInferenceRequest({
+      customerId: req.auth!.customerId,
+      apiKeyId: req.auth!.apiKeyId,
+      requestedModelSlug: "neo4j:storage",
+      stream: false,
+    });
+    await startAttempt(execution.id, {
+      backend: "neo4j",
+      modelSlug: "neo4j:storage",
+      attemptNo: 1,
+    });
+    const storeUnits = Math.min(2_147_483_647, Math.max(0, Math.floor(stats.storeSizeBytes)));
+    await finalizeAndMeter({
+      executionId: execution.id,
+      auth: req.auth!,
+      modelSlug: "neo4j:storage",
+      promptTokens: storeUnits,
+      completionTokens: 0,
+      latencyMs: stats.tookMs,
+      ttftMs: null,
+      generationMs: stats.tookMs,
+      queueMs: 0,
+      finishReason: "stop",
+      requestId: req.requestId ?? execution.id,
+      reservedTokens: 0,
+      costMicros: 0n,
+    });
+    res.json({
+      nodeCount: stats.nodeCount,
+      relationshipCount: stats.relationshipCount,
+      storeSizeBytes: stats.storeSizeBytes,
+      tookMs: stats.tookMs,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: {
+        type: "neo4j_error",
+        message: error instanceof Error ? error.message : "Neo4j stats failed",
+      },
+    });
+  }
+});
+
+v1Router.post("/graph/query", authMiddleware, rateLimitMiddleware, quotaMiddleware, async (req, res) => {
+  try {
+    if (!neo4jConfigured()) {
+      return res.status(503).json({
+        error: { type: "service_unavailable", message: "Neo4j is not configured on ModelForge" },
+      });
+    }
+    const cypher = typeof req.body?.cypher === "string" ? req.body.cypher.trim() : "";
+    if (!cypher) {
+      return res.status(400).json({ error: { type: "invalid_request", message: "cypher required" } });
+    }
+    const params =
+      req.body?.params && typeof req.body.params === "object" && !Array.isArray(req.body.params)
+        ? (req.body.params as Record<string, unknown>)
+        : {};
+    const result = await runCypher({ cypher, params });
+    const slug = result.kind === "write" ? "neo4j:write" : "neo4j:read";
+    const execution = await createInferenceRequest({
+      customerId: req.auth!.customerId,
+      apiKeyId: req.auth!.apiKeyId,
+      requestedModelSlug: slug,
+      stream: false,
+    });
+    await startAttempt(execution.id, {
+      backend: "neo4j",
+      modelSlug: slug,
+      attemptNo: 1,
+    });
+    await finalizeAndMeter({
+      executionId: execution.id,
+      auth: req.auth!,
+      modelSlug: slug,
+      promptTokens: result.billableUnits,
+      completionTokens: 0,
+      latencyMs: result.tookMs,
+      ttftMs: null,
+      generationMs: result.tookMs,
+      queueMs: 0,
+      finishReason: "stop",
+      requestId: req.requestId ?? execution.id,
+      reservedTokens: 0,
+      costMicros: 0n,
+    });
+    res.json({
+      kind: result.kind,
+      billableUnits: result.billableUnits,
+      tookMs: result.tookMs,
+      records: result.records,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: {
+        type: "neo4j_error",
+        message: error instanceof Error ? error.message : "Neo4j query failed",
+      },
+    });
+  }
+});
+
+v1Router.post(
   "/chat/completions",
   authMiddleware,
   rateLimitMiddleware,
@@ -131,7 +558,7 @@ v1Router.post(
       });
     }
     const body = parsed.data;
-    const messages = normalizeMessages(body.messages);
+    const messages = coalesceAlternatingRoles(normalizeMessages(body.messages));
     const requestedKnowledgeBaseIds = body.metadata?.modelforge?.knowledge_base_ids ?? [];
     const ragTopK = body.metadata?.modelforge?.rag_top_k ?? 4;
     const estimatedTokens =
@@ -437,6 +864,12 @@ v1Router.post(
                 chunk.finish_reason === "length" || chunk.finish_reason === "error"
                   ? chunk.finish_reason
                   : "stop";
+              // Prefer engine usage; fall back so subscriber quota still moves.
+              if (promptTokens + completionTokens === 0) {
+                const estimated = estimateChatTokens(messages, content);
+                promptTokens = estimated.promptTokens;
+                completionTokens = estimated.completionTokens;
+              }
               res.write(
                 toSse(
                   buildChunk({
@@ -469,6 +902,11 @@ v1Router.post(
                   ? chunk.finish_reason
                   : "stop";
             }
+          }
+          if (promptTokens + completionTokens === 0) {
+            const estimated = estimateChatTokens(messages, content);
+            promptTokens = estimated.promptTokens;
+            completionTokens = estimated.completionTokens;
           }
           const latencyMs = Date.now() - started;
           const costMicros = computeCostMicros(
@@ -643,11 +1081,11 @@ v1Router.post(
 async function finalizeAndMeter(input: {
   executionId: string;
   auth: NonNullable<Express.Request["auth"]>;
-  hostedId: string;
+  hostedId?: string;
   modelSlug: string;
-  pricingVersionId: string;
-  priceIn: number;
-  priceOut: number;
+  pricingVersionId?: string;
+  priceIn?: number;
+  priceOut?: number;
   promptTokens: number;
   completionTokens: number;
   latencyMs: number;
@@ -688,21 +1126,33 @@ async function finalizeAndMeter(input: {
     });
   }
 
-  await enqueueUsage({
-    customerId: input.auth.customerId,
-    apiKeyId: input.auth.apiKeyId,
-    hostedModelId: input.hostedId,
-    modelSlug: input.modelSlug,
-    promptTokens: input.promptTokens,
-    completionTokens: input.completionTokens,
-    latencyMs: input.latencyMs,
-    requestId: input.requestId,
-    idempotencyKey: `${input.executionId}:usage`,
-    inferenceRequestId: input.executionId,
-    costMicros: input.costMicros.toString(),
-    pricePerMTokIn: input.priceIn,
-    pricePerMTokOut: input.priceOut,
-  });
+  try {
+    await enqueueUsage({
+      customerId: input.auth.customerId,
+      apiKeyId: input.auth.apiKeyId,
+      hostedModelId: input.hostedId,
+      modelSlug: input.modelSlug,
+      promptTokens: input.promptTokens,
+      completionTokens: input.completionTokens,
+      latencyMs: input.latencyMs,
+      requestId: input.requestId,
+      idempotencyKey: `${input.executionId}:usage`,
+      inferenceRequestId: input.executionId,
+      costMicros: input.costMicros.toString(),
+      pricePerMTokIn: input.priceIn,
+      pricePerMTokOut: input.priceOut,
+    });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "usage.persist_failed",
+        executionId: input.executionId,
+        customerId: input.auth.customerId,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    throw error;
+  }
   await bumpQuotaCache(input.auth.customerId, input.promptTokens + input.completionTokens);
   await writeAuditEvent({
     actorType: "api_key",
@@ -718,4 +1168,16 @@ async function finalizeAndMeter(input: {
       costMicros: input.costMicros.toString(),
     },
   });
+}
+
+/** Rough token estimate when llama-server omits usage (keeps subscriber quota accurate). */
+function estimateChatTokens(
+  messages: Array<{ role: string; content: string }>,
+  completion: string,
+): { promptTokens: number; completionTokens: number } {
+  const promptChars = messages.reduce((sum, message) => sum + message.content.length, 0);
+  return {
+    promptTokens: Math.max(1, Math.ceil(promptChars / 4)),
+    completionTokens: Math.max(0, Math.ceil(completion.length / 4)),
+  };
 }
