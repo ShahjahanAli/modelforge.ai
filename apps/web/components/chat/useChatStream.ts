@@ -117,7 +117,8 @@ export function useChatStream(
       const form = new FormData();
       form.set("audio", file, file.name || "recording.webm");
       if (hasAnalysisPrompt) form.set("prompt", prompt!.trim());
-      form.set("model", model);
+      // LLM analysis model is chosen server-side (platform default). Only forward an explicit pick.
+      if (model !== "auto") form.set("model", model);
       form.set("max_tokens", String(maxTokens));
       try {
         step = "transcribing";

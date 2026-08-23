@@ -5,7 +5,7 @@ import { Boxes, Cpu } from "lucide-react";
 import { authOptions } from "@/lib/auth";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Panel } from "@/components/ui/Panel";
-import { StatusBadge } from "@/components/ui/Badge";
+import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 
 export default async function ModelsPage() {
@@ -47,8 +47,9 @@ export default async function ModelsPage() {
                   <h2 className="text-base font-semibold tracking-tight text-content-primary">
                     {model.displayName}
                   </h2>
-                  <p className="mt-1.5">
+                  <p className="mt-1.5 flex flex-wrap items-center gap-1.5">
                     <span className="mono-chip">{model.modelId}</span>
+                    {model.isPlatformDefault ? <Badge tone="brand">Platform default</Badge> : null}
                   </p>
                 </div>
                 <StatusBadge status={model.status} />

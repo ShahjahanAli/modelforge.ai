@@ -223,6 +223,7 @@ model HostedModel {
   qualityClass      Int                    @default(50)
   latencyClass      Int                    @default(50)
   supportsTools     Boolean                @default(false)
+  isPlatformDefault Boolean                @default(false)
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
   usageEvents       UsageEvent[]

@@ -13,3 +13,7 @@
 faster-whisper>=1.1.0
 nemo_toolkit[asr]>=2.0.0
 pyannote.audio>=4.0.0
+# Optional — only needed when installing Transformers-format Whisper fine-tunes
+# (e.g. bengaliAI/tugstugi_bengaliai-regional-asr_whisper-medium) that are converted
+# to CTranslate2 on first install:
+#   pip install "transformers[torch]>=4.23"

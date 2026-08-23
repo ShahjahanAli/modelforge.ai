@@ -8,7 +8,13 @@ import { ChatSettings } from "./ChatSettings";
 import { useChatSession } from "./ChatSession";
 import type { ChatModelOption } from "./useChatStream";
 
-export function ChatWorkspace({ models }: { models: ChatModelOption[] }) {
+export function ChatWorkspace({
+  models,
+  autoRouteLabel,
+}: {
+  models: ChatModelOption[];
+  autoRouteLabel?: string;
+}) {
   const chat = useChatSession();
 
   return (
@@ -43,7 +49,7 @@ export function ChatWorkspace({ models }: { models: ChatModelOption[] }) {
         <div className="flex h-[clamp(28rem,calc(100vh-19rem),52rem)] min-h-0 flex-col">
           <ChatConsole models={models} chat={chat} />
         </div>
-        <ChatSettings models={models} chat={chat} />
+        <ChatSettings models={models} chat={chat} autoRouteLabel={autoRouteLabel} />
       </div>
     </Panel>
   );

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { normalizeTranscript, type SttProvider, type TranscriptArtifact } from "./types.js";
+import { normalizeTranscript, type SttProvider, type TranscriptArtifact, type VoiceTranscribeOptions } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,7 +33,7 @@ export class FasterWhisperProvider implements SttProvider {
 
   constructor(private readonly config: FasterWhisperConfig) {}
 
-  async transcribe(filePath: string, options?: { language?: string }): Promise<TranscriptArtifact> {
+  async transcribe(filePath: string, options?: VoiceTranscribeOptions): Promise<TranscriptArtifact> {
     const args = [
       this.config.scriptPath,
       "--audio",
@@ -53,6 +53,9 @@ export class FasterWhisperProvider implements SttProvider {
       "--no-speech-threshold",
       String(this.config.noSpeechThreshold),
       ...(options?.language ? ["--language", options.language] : []),
+      ...(options?.initialPrompt?.trim()
+        ? ["--initial-prompt", options.initialPrompt.trim()]
+        : []),
     ];
     const { stdout, stderr } = await execFileAsync(this.config.pythonBin, args, {
       maxBuffer: 10 * 1024 * 1024,
@@ -67,7 +70,12 @@ export class FasterWhisperProvider implements SttProvider {
     }
     let parsed: FasterWhisperOutput;
     try {
-      parsed = JSON.parse(stdout) as FasterWhisperOutput;
+      const line = stdout
+        .split(/\r?\n/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .at(-1);
+      parsed = JSON.parse(line ?? "") as FasterWhisperOutput;
     } catch (error) {
       throw new Error(
         `Invalid Faster-Whisper JSON output${error instanceof Error ? `: ${error.message}` : ""}`,

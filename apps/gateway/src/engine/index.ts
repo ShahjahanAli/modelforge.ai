@@ -59,6 +59,91 @@ export async function reconcileModelRegistry(): Promise<void> {
   ]);
 }
 
+/** Unload every resident model except `keepModelId` (best-effort). */
+export async function unloadAllExcept(keepModelId: string): Promise<string[]> {
+  const resident = await listLoadedModels();
+  const unloaded: string[] = [];
+  for (const model of resident.models) {
+    if (model.model_id === keepModelId) continue;
+    try {
+      const result = await unloadModel(model.model_id);
+      if (result.success) {
+        await prisma.hostedModel.updateMany({
+          where: { modelId: model.model_id },
+          data: { status: "INACTIVE" },
+        });
+        unloaded.push(model.model_id);
+      }
+    } catch (error) {
+      console.warn(
+        `[engine] unload skipped for ${model.model_id}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+  return unloaded;
+}
+
+/** Load the platform default into the pool if it is registered but not resident. */
+export async function warmPlatformDefaultModel(): Promise<void> {
+  if (process.env.LLAMA_WARM_DEFAULT === "false") return;
+
+  const defaultModel = await prisma.hostedModel.findFirst({
+    where: { isPlatformDefault: true },
+  });
+  if (!defaultModel) return;
+
+  if (process.env.LLAMA_SINGLE_DEFAULT !== "false") {
+    const evicted = await unloadAllExcept(defaultModel.modelId);
+    if (evicted.length > 0) {
+      console.log(`[engine] evicted non-default models: ${evicted.join(", ")}`);
+    }
+  }
+
+  const resident = await listLoadedModels();
+  if (resident.models.some((model) => model.model_id === defaultModel.modelId)) {
+    if (defaultModel.status !== "LOADED") {
+      await prisma.hostedModel.update({
+        where: { id: defaultModel.id },
+        data: { status: "LOADED" },
+      });
+    }
+    return;
+  }
+
+  try {
+    const result = await loadModel({
+      model_id: defaultModel.modelId,
+      weights_path: defaultModel.weightsPath,
+      context_length: defaultModel.contextLength,
+      n_threads: defaultModel.nThreads,
+      quantization: defaultModel.quantization,
+      use_mmap: true,
+    });
+    await prisma.hostedModel.update({
+      where: { id: defaultModel.id },
+      data: { status: result.success ? "LOADED" : "ERROR" },
+    });
+    if (result.success) {
+      console.log(`[engine] platform default warmed: ${defaultModel.modelId}`);
+    } else {
+      console.warn(
+        `[engine] platform default warm failed: ${defaultModel.modelId} — ${result.message ?? "unknown error"}`,
+      );
+    }
+  } catch (error) {
+    await prisma.hostedModel.update({
+      where: { id: defaultModel.id },
+      data: { status: "ERROR" },
+    });
+    console.warn(
+      `[engine] platform default warm failed: ${defaultModel.modelId} — ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 export function mapEngineFailure(err: unknown): { code: string; message: string } {
   return isGrpcBackend() ? grpcBackend.mapGrpcError(err) : llamaBackend.mapEngineFailure(err);
 }

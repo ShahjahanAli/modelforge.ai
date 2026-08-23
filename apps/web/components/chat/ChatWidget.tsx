@@ -14,7 +14,13 @@ import type { ChatModelOption } from "./useChatStream";
  * survives navigation between dashboard pages, and stays out of the way until
  * the bubble is clicked.
  */
-export function ChatWidget({ models }: { models: ChatModelOption[] }) {
+export function ChatWidget({
+  models,
+  autoRouteLabel,
+}: {
+  models: ChatModelOption[];
+  autoRouteLabel?: string;
+}) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -79,7 +85,14 @@ export function ChatWidget({ models }: { models: ChatModelOption[] }) {
             </button>
           </div>
 
-          {showSettings && <ChatSettings models={models} chat={chat} layout="inline" />}
+          {showSettings && (
+            <ChatSettings
+              models={models}
+              chat={chat}
+              layout="inline"
+              autoRouteLabel={autoRouteLabel}
+            />
+          )}
 
           <ChatConsole models={models} chat={chat} variant="widget" />
         </div>

@@ -81,10 +81,23 @@ export async function resolveModelForRequest(input: {
       fallbackModels?: string[];
     } | null) ?? {};
 
-  const decision = evaluateRoutingPolicy(document, {
-    requestedModel: input.requestedModel,
-    candidates,
+  const platformDefault = await prisma.hostedModel.findFirst({
+    where: { isPlatformDefault: true },
+    select: { modelId: true },
   });
+
+  const decision = (() => {
+    try {
+      return evaluateRoutingPolicy(document, {
+        requestedModel: input.requestedModel,
+        candidates,
+        platformDefaultModel: platformDefault?.modelId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Routing policy rejected request";
+      throw Object.assign(new Error(message), { code: "ROUTING_POLICY_FAILED" });
+    }
+  })();
 
   if (input.requestedModel !== "auto" && !allowed.has(input.requestedModel)) {
     throw Object.assign(new Error(`Model ${input.requestedModel} not available on your plan`), {
@@ -129,4 +142,38 @@ export async function resolveModelForRequest(input: {
     redactedMessages,
     piiFindings,
   };
+}
+
+/** Voice LLM analysis uses the platform default — not open-ended auto routing. */
+export async function resolveVoiceAnalysisModel(input: {
+  auth: AuthContext;
+  requestedModel?: string;
+}): Promise<string> {
+  const requested = input.requestedModel?.trim();
+  if (requested && requested !== "auto") {
+    if (!input.auth.allowedModelIds.includes(requested)) {
+      throw Object.assign(new Error(`Model ${requested} not available on your plan`), {
+        code: "MODEL_NOT_FOUND",
+      });
+    }
+    return requested;
+  }
+
+  const platformDefault = await prisma.hostedModel.findFirst({
+    where: { isPlatformDefault: true },
+    select: { modelId: true },
+  });
+  if (!platformDefault) {
+    throw Object.assign(
+      new Error("No platform default model configured — set one in Admin → Model Registry"),
+      { code: "NO_DEFAULT_MODEL" },
+    );
+  }
+  if (!input.auth.allowedModelIds.includes(platformDefault.modelId)) {
+    throw Object.assign(
+      new Error(`Platform default ${platformDefault.modelId} is not entitled on your plan`),
+      { code: "MODEL_NOT_FOUND" },
+    );
+  }
+  return platformDefault.modelId;
 }

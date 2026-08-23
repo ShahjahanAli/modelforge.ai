@@ -62,7 +62,7 @@ async function main() {
 
   const coder = await prisma.hostedModel.upsert({
     where: { modelId: "zms-coder-7b" },
-    update: {},
+    update: { isPlatformDefault: true },
     create: {
       modelId: "zms-coder-7b",
       displayName: "ZMS Coder 7B",
@@ -75,7 +75,13 @@ async function main() {
       pricePerMTokIn: 20,
       pricePerMTokOut: 60,
       expectedTokPerSec: 18,
+      isPlatformDefault: true,
     },
+  });
+
+  await prisma.hostedModel.updateMany({
+    where: { modelId: { not: coder.modelId }, isPlatformDefault: true },
+    data: { isPlatformDefault: false },
   });
 
   await prisma.hostedModel.upsert({

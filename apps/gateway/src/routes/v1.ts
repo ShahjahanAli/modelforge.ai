@@ -21,7 +21,7 @@ import {
   writeAuditEvent,
 } from "../lib/execution.js";
 import { commitQuota, QuotaExceededError, releaseQuota, reserveQuota } from "../lib/quotaLedger.js";
-import { resolveModelForRequest } from "../lib/policyRouter.js";
+import { resolveModelForRequest, resolveVoiceAnalysisModel } from "../lib/policyRouter.js";
 import { computeCostMicros, getActivePricingVersion } from "../lib/pricing.js";
 import { enqueueUsage } from "../lib/queues.js";
 import { claimCoreTrace, type CoreTraceRecorder } from "../lib/coreTrace.js";
@@ -74,6 +74,7 @@ v1Router.get("/models", authMiddleware, async (req, res) => {
       owned_by: "modelforge",
       context_length: m.contextLength,
       status: m.status,
+      is_default: m.isPlatformDefault,
       pricing: {
         input_per_mtok_cents: m.pricePerMTokIn,
         output_per_mtok_cents: m.pricePerMTokOut,
@@ -100,6 +101,7 @@ v1Router.get("/models/:modelId", authMiddleware, async (req, res) => {
     quantization: m.quantization,
     expected_tok_per_sec: m.expectedTokPerSec,
     status: m.status,
+    is_default: m.isPlatformDefault,
   });
 });
 
@@ -214,7 +216,6 @@ v1Router.post(
       await writeFile(storedPath, audioBuffer);
 
       const transcribeStarted = Date.now();
-      const sttLanguageHint = resolveSttLanguageHint(process.env.STT_LANGUAGE);
       const voiceEnv = await resolveVoiceEnv({
         VOICE_ENABLED: process.env.VOICE_ENABLED !== "false",
         VOICE_UPLOAD_DIR: uploadDir,
@@ -254,6 +255,11 @@ v1Router.post(
           : undefined,
       });
       ensureSttScript(voiceEnv);
+      const activeSttModel =
+        voiceEnv.STT_PROVIDER === "nemo"
+          ? voiceEnv.STT_NEMO_MODEL
+          : voiceEnv.STT_FASTER_WHISPER_MODEL;
+      const sttLanguageHint = resolveSttLanguageHint(process.env.STT_LANGUAGE, activeSttModel);
       const stt = createSttProvider(voiceEnv);
 
       const transcript = await transcribeWithDiarization({
@@ -355,8 +361,17 @@ v1Router.post(
         : null;
 
       let analysis = "";
+      let analysisModel: string | null = null;
       if (analysisPrompt) {
-        const requestedModel = String(req.query.model ?? "auto");
+        analysisModel = await resolveVoiceAnalysisModel({
+          auth: {
+            customerId: req.auth!.customerId,
+            apiKeyId: req.auth!.apiKeyId,
+            allowedModelIds: req.auth!.allowedModelIds,
+            planId: req.auth!.planId,
+          },
+          requestedModel: typeof req.query.model === "string" ? req.query.model : undefined,
+        });
         const upstream = await fetch(`http://127.0.0.1:${process.env.GATEWAY_PORT ?? "9000"}/v1/chat/completions`, {
           method: "POST",
           headers: {
@@ -365,7 +380,7 @@ v1Router.post(
             "x-modelforge-orchestration": "voice-analyze",
           },
           body: JSON.stringify({
-            model: requestedModel,
+            model: analysisModel,
             stream: false,
             max_tokens: Number(req.query.max_tokens ?? 1200),
             temperature: 0.2,
@@ -405,6 +420,7 @@ v1Router.post(
           speakers: publicTranscript.speakers,
           segmentCount: publicTranscript.segments.length,
           diarization: voiceEnv.DIARIZATION_ENABLED,
+          analysisModel,
         }),
       );
       return res.json({
@@ -416,9 +432,17 @@ v1Router.post(
           sttBillableUnits: sttUnits,
           diarizationEnabled: voiceEnv.DIARIZATION_ENABLED,
           speakerCount: publicTranscript.speakers.length,
+          analysisModel,
         },
       });
     } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "voice.pipeline_error",
+          message: error instanceof Error ? error.message : String(error),
+          requestId: req.requestId,
+        }),
+      );
       return res.status(500).json({
         error: {
           type: "voice_pipeline_error",

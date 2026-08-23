@@ -99,6 +99,101 @@ export async function grantModelToAllPlansAction(formData: FormData) {
   revalidatePath("/chat");
 }
 
+export async function setPlatformDefaultModelAction(formData: FormData): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  const admin = await requireAdmin();
+  const modelId = String(formData.get("modelId")).trim();
+  if (!modelId) return { ok: false, message: "Model id required" };
+
+  const model = await prisma.hostedModel.findUnique({ where: { modelId } });
+  if (!model) return { ok: false, message: "Model not found" };
+
+  await prisma.$transaction([
+    prisma.hostedModel.updateMany({
+      where: { isPlatformDefault: true },
+      data: { isPlatformDefault: false },
+    }),
+    prisma.hostedModel.update({
+      where: { modelId },
+      data: { isPlatformDefault: true },
+    }),
+  ]);
+
+  const plans = await prisma.plan.findMany({ select: { id: true, allowedModelIds: true } });
+  await Promise.all(
+    plans
+      .filter((plan) => !plan.allowedModelIds.includes(modelId))
+      .map(async (plan) => {
+        await prisma.plan.update({
+          where: { id: plan.id },
+          data: { allowedModelIds: [...plan.allowedModelIds, modelId] },
+        });
+        await prisma.planModelEntitlement.upsert({
+          where: { planId_modelSlug: { planId: plan.id, modelSlug: modelId } },
+          update: {},
+          create: { planId: plan.id, modelSlug: modelId },
+        });
+      }),
+  );
+
+  let loadMessage = "";
+  try {
+    const resident = (await gatewayFetch("/internal/engine/models")) as {
+      models?: Array<{ model_id: string }>;
+    };
+    for (const row of resident.models ?? []) {
+      if (row.model_id === modelId) continue;
+      try {
+        await gatewayFetch(`/internal/engine/models/${encodeURIComponent(row.model_id)}/unload`, {
+          method: "POST",
+          body: "{}",
+        });
+      } catch {
+        // Best-effort — continue loading the new default.
+      }
+    }
+
+    const result = (await gatewayFetch(`/internal/engine/models/${encodeURIComponent(modelId)}/load`, {
+      method: "POST",
+      body: "{}",
+    })) as { success?: boolean; message?: string; error?: string };
+    if (result.success === false) {
+      loadMessage = result.error ?? result.message ?? "Load failed";
+    } else {
+      loadMessage = result.message ?? "Loaded into model pool";
+    }
+  } catch (error) {
+    loadMessage = error instanceof Error ? error.message : "Load failed";
+  }
+
+  await writeAuditEvent({
+    actorType: "admin",
+    actorId: admin.id,
+    action: "model.set_platform_default",
+    resourceType: "HostedModel",
+    resourceId: model.id,
+    after: { modelId },
+    metadata: { loadMessage: loadMessage || null },
+  });
+  revalidatePath("/admin/models");
+  revalidatePath("/admin/infra");
+  revalidatePath("/chat");
+  revalidatePath("/models");
+
+  if (loadMessage && loadMessage !== "Loaded into model pool") {
+    return {
+      ok: true,
+      message: `${modelId} is now the platform default, but warm load failed: ${loadMessage}`,
+    };
+  }
+  return {
+    ok: true,
+    message: `${model.displayName} is the platform default and is warming in the model pool`,
+  };
+}
+
 export async function removeModelAction(modelId: string): Promise<{ ok: boolean; message: string }> {
   const admin = await requireAdmin();
   const slug = modelId.trim();

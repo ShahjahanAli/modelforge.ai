@@ -5,7 +5,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import type { NavGroup } from "@/components/shell/SidebarNav";
 import { ChatWidget } from "@/components/chat/ChatWidget";
 import { ChatSession } from "@/components/chat/ChatSession";
-import { chatKnowledgeBasesForSession, chatModelsForSession } from "@/lib/chatModels";
+import { chatKnowledgeBasesForSession, chatModelsForSession, platformDefaultModelLabel } from "@/lib/chatModels";
 
 export const dynamic = "force-dynamic";
 
@@ -65,10 +65,12 @@ export default async function CustomerLayout({ children }: { children: React.Rea
           operationsGroup,
         ]
       : [workspaceGroup, controlGroup];
-  const [chatModels, knowledgeBases] = await Promise.all([
+  const [chatModels, knowledgeBases, defaultLabel] = await Promise.all([
     chatModelsForSession(),
     chatKnowledgeBasesForSession(),
+    platformDefaultModelLabel(),
   ]);
+  const autoRouteLabel = defaultLabel ? `Auto → ${defaultLabel}` : "Auto route";
 
   return (
     <ChatSession knowledgeBases={knowledgeBases}>
@@ -76,7 +78,7 @@ export default async function CustomerLayout({ children }: { children: React.Rea
         groups={groups}
         email={session.user.email ?? "unknown"}
         role={role}
-        overlay={role !== "ADMIN" ? <ChatWidget models={chatModels} /> : null}
+        overlay={role !== "ADMIN" ? <ChatWidget models={chatModels} autoRouteLabel={autoRouteLabel} /> : null}
       >
         {children}
       </AppShell>

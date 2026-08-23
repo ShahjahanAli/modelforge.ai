@@ -8,10 +8,12 @@ const TOKEN_CHOICES = [512, 1024, 2048, 4096];
 export function ChatSettings({
   models,
   chat,
+  autoRouteLabel = "Auto route",
   layout = "sidebar",
 }: {
   models: ChatModelOption[];
   chat: ChatStream;
+  autoRouteLabel?: string;
   layout?: "sidebar" | "inline";
 }) {
   const {
@@ -44,7 +46,7 @@ export function ChatSettings({
         onChange={(event) => setModel(event.target.value)}
         disabled={streaming}
       >
-        <option value="auto">Auto route</option>
+        <option value="auto">{autoRouteLabel}</option>
         {models.map((option) => (
           <option key={option.id} value={option.id}>
             {option.name}

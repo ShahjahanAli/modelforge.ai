@@ -286,11 +286,21 @@ export async function cleanupOldVoiceUploads(uploadDir: string, retentionHours: 
   return deleted;
 }
 
-/** Empty, "auto", or "detect" => Whisper auto-detects; otherwise use as a language hint. */
-export function resolveSttLanguageHint(configured?: string): string | undefined {
+/** Empty, "auto", or "detect" => Whisper auto-detects unless the model is Bengali-tuned. */
+export function resolveSttLanguageHint(configured?: string, model?: string): string | undefined {
   const value = configured?.trim().toLowerCase();
-  if (!value || value === "auto" || value === "detect") return undefined;
+  if (!value || value === "auto" || value === "detect") {
+    if (model && isBengaliTunedSttModel(model)) return "bn";
+    return undefined;
+  }
   return value;
+}
+
+const BENGALI_STT_MODEL_PATTERN =
+  /bengali|bangla|bengaliai|tugstugi|bhatiyali|kazalbrur\/bangla/i;
+
+export function isBengaliTunedSttModel(model: string): boolean {
+  return BENGALI_STT_MODEL_PATTERN.test(model);
 }
 
 export function buildVoiceAnalysisSystemPrompt(transcript: TranscriptArtifact): string {
@@ -391,7 +401,7 @@ export async function probeVoiceStatus(env: VoiceEnv): Promise<VoiceStatus> {
     language:
       resolved.STT_PROVIDER === "nemo"
         ? "bn"
-        : (resolveSttLanguageHint(resolved.STT_LANGUAGE) ?? "auto"),
+        : (resolveSttLanguageHint(resolved.STT_LANGUAGE, activeModel) ?? "auto"),
     configuredModel: activeModel,
     envModel,
     envProvider: env.STT_PROVIDER,

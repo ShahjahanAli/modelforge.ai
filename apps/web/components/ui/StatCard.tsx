@@ -18,6 +18,7 @@ export function StatCard({
   hint,
   icon: Icon,
   accent = "brand",
+  valueClassName,
   children,
 }: {
   label: string;
@@ -26,10 +27,11 @@ export function StatCard({
   hint?: ReactNode;
   icon?: LucideIcon;
   accent?: Accent;
+  valueClassName?: string;
   children?: ReactNode;
 }) {
   return (
-    <article className="panel panel-hover p-4 sm:p-5">
+    <article className="panel panel-hover min-w-0 p-4 sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <p className="label-caps">{label}</p>
         {Icon && (
@@ -40,8 +42,10 @@ export function StatCard({
           </span>
         )}
       </div>
-      <p className="mt-3 flex flex-wrap items-baseline gap-x-1.5">
-        <span className="metric">{value}</span>
+      <p className="mt-3 flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+        <span className={valueClassName ? `metric min-w-0 ${valueClassName}` : "metric min-w-0"}>
+          {value}
+        </span>
         {unit && <span className="text-xs text-content-muted">{unit}</span>}
       </p>
       {hint && <div className="mt-1.5 text-xs text-content-muted">{hint}</div>}

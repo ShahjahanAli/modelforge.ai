@@ -25,6 +25,9 @@ credentials.json
 *.ggml
 data/models/*
 !data/models/.gitkeep
+# Converted Faster-Whisper CTranslate2 weights (from HF Whisper fine-tunes)
+data/voice/ct2/*
+!data/voice/ct2/.gitkeep
 # Local Ed25519 signing material for usage receipts
 data/signing/
 # Prebuilt llama.cpp binaries from `pnpm llama:fetch`

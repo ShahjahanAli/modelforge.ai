@@ -7,9 +7,10 @@ import { ensureLocalNode } from "./lib/modernJobs.js";
 import { ensureSigningKey } from "./lib/receipts.js";
 import { hydrateArmedCoreTraces } from "./lib/coreTrace.js";
 import { restoreHuggingFaceDownloads } from "./lib/huggingFace.js";
-import { reconcileModelRegistry, shutdownEngine } from "./engine/index.js";
+import { reconcileModelRegistry, shutdownEngine, warmPlatformDefaultModel } from "./engine/index.js";
 import { closeNeo4j } from "./lib/neo4j.js";
 import { internalRouter } from "./routes/internal.js";
+import { anusandhanRouter } from "./routes/anusandhan.js";
 import { v1Router } from "./routes/v1.js";
 
 const env = loadEnv();
@@ -34,6 +35,7 @@ app.get("/healthz", (_req, res) => {
 });
 
 app.use("/v1", v1Router);
+app.use("/v1/anusandhan", anusandhanRouter);
 app.use("/internal", internalRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -63,6 +65,7 @@ const server = app.listen(env.GATEWAY_PORT, async () => {
   try {
     const resumedDownloads = await restoreHuggingFaceDownloads();
     await reconcileModelRegistry();
+    await warmPlatformDefaultModel();
     await ensureLocalNode();
     await ensureSigningKey();
     const armedTraces = await hydrateArmedCoreTraces();

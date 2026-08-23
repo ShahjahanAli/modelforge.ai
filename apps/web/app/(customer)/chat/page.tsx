@@ -1,12 +1,16 @@
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { ChatWorkspace } from "@/components/chat/ChatWorkspace";
-import { chatModelsForSession } from "@/lib/chatModels";
+import { chatModelsForSession, platformDefaultModelLabel } from "@/lib/chatModels";
 
 export const dynamic = "force-dynamic";
 
 export default async function ChatPage() {
-  const models = await chatModelsForSession();
+  const [models, defaultLabel] = await Promise.all([
+    chatModelsForSession(),
+    platformDefaultModelLabel(),
+  ]);
+  const autoRouteLabel = defaultLabel ? `Auto → ${defaultLabel}` : "Auto route";
 
   return (
     <>
@@ -21,7 +25,7 @@ export default async function ChatPage() {
         }
       />
 
-      <ChatWorkspace models={models} />
+      <ChatWorkspace models={models} autoRouteLabel={autoRouteLabel} />
     </>
   );
 }

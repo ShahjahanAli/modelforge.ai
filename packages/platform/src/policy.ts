@@ -20,6 +20,7 @@ export const routingCandidateSchema = z.object({
 export const routingContextSchema = z.object({
   requestedModel: z.string().min(1),
   candidates: z.array(routingCandidateSchema).min(1),
+  platformDefaultModel: z.string().min(1).optional(),
 });
 
 export type RoutingPolicyDocument = z.input<typeof routingPolicyDocumentSchema>;
@@ -80,6 +81,26 @@ export function evaluateRoutingPolicy(
     reason = "auto_routing";
   }
 
+  if (input.requestedModel === "auto" && input.platformDefaultModel) {
+    const entitled = input.candidates.find(
+      (candidate) => candidate.modelSlug === input.platformDefaultModel,
+    );
+    if (!entitled) {
+      throw new Error(
+        `Platform default ${input.platformDefaultModel} is not entitled on this API key`,
+      );
+    }
+    const defaultEligible = eligible.find(
+      (candidate) => candidate.modelSlug === input.platformDefaultModel,
+    );
+    if (!defaultEligible) {
+      throw new Error(
+        `Platform default ${input.platformDefaultModel} is blocked by routing policy constraints`,
+      );
+    }
+    selected = defaultEligible;
+    reason = `${reason}:platform_default`;
+  }
   if (!selected) {
     selected = firstListedCandidate(policy.preferredModels, eligible);
     if (selected) {

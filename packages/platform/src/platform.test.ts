@@ -56,7 +56,63 @@ describe("local signing", () => {
 });
 
 describe("routing policy", () => {
-  it("resolves auto to the first eligible preferred model", () => {
+  it("resolves auto to the platform default before preferred models", () => {
+    const result = evaluateRoutingPolicy(
+      {
+        preferredModels: ["premium", "balanced"],
+        fallbackModels: ["economy"],
+      },
+      {
+        requestedModel: "auto",
+        platformDefaultModel: "balanced",
+        candidates: [
+          {
+            modelSlug: "premium",
+            costMicros: 80,
+            qualityClass: 95,
+            latencyClass: 20,
+          },
+          {
+            modelSlug: "balanced",
+            costMicros: 45,
+            qualityClass: 80,
+            latencyClass: 30,
+          },
+          {
+            modelSlug: "economy",
+            costMicros: 20,
+            qualityClass: 60,
+            latencyClass: 35,
+          },
+        ],
+      },
+    );
+
+    expect(result.resolvedModelSlug).toBe("balanced");
+    expect(result.reason).toContain("platform_default");
+  });
+
+  it("fails auto when platform default is configured but not entitled", () => {
+    expect(() =>
+      evaluateRoutingPolicy(
+        { preferredModels: ["economy"], fallbackModels: [] },
+        {
+          requestedModel: "auto",
+          platformDefaultModel: "premium",
+          candidates: [
+            {
+              modelSlug: "economy",
+              costMicros: 20,
+              qualityClass: 60,
+              latencyClass: 35,
+            },
+          ],
+        },
+      ),
+    ).toThrow(/not entitled/i);
+  });
+
+  it("resolves auto to the first eligible preferred model when no platform default", () => {
     const result = evaluateRoutingPolicy(
       {
         maxCostMicros: 50,

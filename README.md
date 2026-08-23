@@ -476,7 +476,7 @@ python -m pip install -r requirements-voice.txt
 # ffmpeg must be on PATH (Ubuntu: sudo apt install -y ffmpeg)
 ```
 
-Install / switch models from **Admin → Infra** (writes `data/voice/runtime.json`). Whisper remains the multilingual default; NeMo [`kazalbrur/bangla-stt-conformer-120m-dialects`](https://huggingface.co/kazalbrur/bangla-stt-conformer-120m-dialects) is stronger on Bangladeshi dialects (CC-BY-NC-4.0).
+Install / switch models from **Admin → Infra** (writes `data/voice/runtime.json`). Whisper remains the multilingual default; NeMo [`kazalbrur/bangla-stt-conformer-120m-dialects`](https://huggingface.co/kazalbrur/bangla-stt-conformer-120m-dialects) is stronger on Bangladeshi dialects (CC-BY-NC-4.0). For regional Bengali with Whisper, use [`bengaliAI/tugstugi_bengaliai-regional-asr_whisper-medium`](https://huggingface.co/bengaliAI/tugstugi_bengaliai-regional-asr_whisper-medium) (converted to CTranslate2 on first install; requires `pip install transformers torch`).
 
 The admin **Infrastructure** page shows a live STT status card powered by:
 

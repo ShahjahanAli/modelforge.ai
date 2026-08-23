@@ -113,6 +113,7 @@ export default async function AdminInfraPage() {
     status: model.status,
     quantization: model.quantization,
     sizeBytes: sizeByModelId.get(model.modelId) ?? sizeByPath.get(model.weightsPath) ?? null,
+    isPlatformDefault: model.isPlatformDefault,
   }));
 
   return (
@@ -177,7 +178,7 @@ export default async function AdminInfraPage() {
             </Badge>
           }
         />
-        <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-5">
+        <div className="grid min-w-0 gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-5">
           <StatCard
             label="Voice pipeline"
             value={voice.enabled ? "ENABLED" : "DISABLED"}
@@ -190,6 +191,7 @@ export default async function AdminInfraPage() {
             value={voice.configuredModel ?? "—"}
             icon={Layers}
             accent={voice.modelCached ? "brand" : "warn"}
+            valueClassName="break-all text-sm leading-snug sm:text-base"
             hint={
               voice.modelCached
                 ? `language ${voice.language ?? "auto"} · cached`

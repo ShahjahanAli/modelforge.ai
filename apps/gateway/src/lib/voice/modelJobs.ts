@@ -20,6 +20,11 @@ export const WHISPER_MODEL_CATALOG = [
   { id: "large-v2", label: "large-v2", approxDownloadGb: 3.0 },
   { id: "large-v3", label: "large-v3", approxDownloadGb: 3.0 },
   { id: "distil-large-v3", label: "distil-large-v3", approxDownloadGb: 1.5 },
+  {
+    id: "bengaliAI/tugstugi_bengaliai-regional-asr_whisper-medium",
+    label: "BengaliAI Regional ASR (Whisper medium)",
+    approxDownloadGb: 3.0,
+  },
 ] as const;
 
 export const NEMO_MODEL_CATALOG = [

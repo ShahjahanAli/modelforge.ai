@@ -31,6 +31,15 @@ export async function chatModelsForSession(): Promise<ChatModelOption[]> {
     .map((model) => ({ id: model.modelId, name: model.displayName }));
 }
 
+/** Display name for the platform default used by model:auto routing. */
+export async function platformDefaultModelLabel(): Promise<string | null> {
+  const model = await prisma.hostedModel.findFirst({
+    where: { isPlatformDefault: true },
+    select: { displayName: true },
+  });
+  return model?.displayName ?? null;
+}
+
 export async function chatKnowledgeBasesForSession(): Promise<KnowledgeBaseOption[]> {
   const session = await getServerSession(authOptions);
   const user = session?.user as { id?: string; role?: string } | undefined;

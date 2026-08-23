@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, Loader2, Power } from "lucide-react";
+import { Check, Download, HardDrive, Loader2, Mic, Power, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -9,7 +9,13 @@ import {
   installWhisperModelAction,
 } from "@/app/(admin)/admin/infra/actions";
 import { Badge } from "@/components/ui/Badge";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
+
+type PendingSttSwitch = {
+  kind: "activate" | "install";
+  model: VoiceModelRow;
+};
 
 export interface VoiceModelRow {
   id: string;
@@ -40,6 +46,13 @@ const WHISPER_FALLBACK: VoiceModelRow[] = [
     cached: false,
     active: false,
   },
+  {
+    id: "bengaliAI/tugstugi_bengaliai-regional-asr_whisper-medium",
+    label: "BengaliAI Regional ASR (Whisper medium)",
+    approxDownloadGb: 3.0,
+    cached: false,
+    active: false,
+  },
 ];
 
 const NEMO_FALLBACK: VoiceModelRow[] = [
@@ -52,6 +65,16 @@ const NEMO_FALLBACK: VoiceModelRow[] = [
     license: "CC-BY-NC-4.0",
   },
 ];
+
+function shortModelLabel(id: string, label: string): string {
+  if (id.includes("bengaliAI") || id.includes("tugstugi")) return "BengaliAI Regional";
+  if (id.includes("bhatiyali") || id.includes("kazalbrur")) return "Bhatiyali Dialect";
+  return label;
+}
+
+function isDialectModel(id: string): boolean {
+  return /bengali|bangla|tugstugi|bhatiyali|kazalbrur/i.test(id);
+}
 
 export function VoiceSttControls({
   models,
@@ -83,6 +106,7 @@ export function VoiceSttControls({
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(initialJobId ?? null);
   const [jobMessage, setJobMessage] = useState<string | null>(null);
+  const [pendingSwitch, setPendingSwitch] = useState<PendingSttSwitch | null>(null);
 
   useEffect(() => {
     setProvider(activeProvider);
@@ -133,31 +157,28 @@ export function VoiceSttControls({
 
   const selectedRow = options.find((row) => row.id === selected);
   const providerMeta = providers.find((row) => row.id === provider);
+  const nemoBlocked = Boolean(provider === "nemo" && providerMeta && !providerMeta.available);
+  const envDiverges = envProvider !== activeProvider || envModel !== activeModel;
+  const selectionIsActive = provider === activeProvider && selected === activeModel;
 
-  async function install() {
-    setBusy(true);
-    const result = await installWhisperModelAction({
-      provider,
-      model: selected,
-      activateOnSuccess: true,
-    });
-    if (!result.ok) {
-      setBusy(false);
-      toast.push({ tone: "danger", title: "Could not start install", description: result.message });
-      return;
-    }
-    setJobId(result.jobId ?? null);
-    setJobMessage(result.message);
-    toast.push({
-      tone: "ok",
-      title: "Download started",
-      description: `${selected} (~${selectedRow?.approxDownloadGb ?? "?"} GB). Keep this page open.`,
-    });
+  const providerList = providers.length
+    ? providers
+    : [
+        { id: "faster-whisper" as const, label: "Faster-Whisper", available: true },
+        { id: "nemo" as const, label: "NeMo (Bangla)", available: false },
+      ];
+
+  function requestSwitch(kind: "activate" | "install", model: VoiceModelRow) {
+    setSelected(model.id);
+    const isLive = provider === activeProvider && model.id === activeModel;
+    if (isLive && kind === "activate") return;
+    setPendingSwitch({ kind, model });
   }
 
-  async function activateOnly() {
+  async function runActivate(model: VoiceModelRow) {
     setBusy(true);
-    const result = await activateWhisperModelAction({ provider, model: selected });
+    setPendingSwitch(null);
+    const result = await activateWhisperModelAction({ provider, model: model.id });
     setBusy(false);
     toast.push({
       tone: result.ok ? "ok" : "danger",
@@ -167,106 +188,282 @@ export function VoiceSttControls({
     if (result.ok) router.refresh();
   }
 
-  return (
-    <div className="space-y-3 border-t border-line px-4 py-4 sm:px-5">
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-sm font-medium text-content-primary">Speech-to-text model</h3>
-        <Badge tone={modelCached ? "ok" : "warn"} dot>
-          {modelCached ? "weights cached" : "weights missing"}
-        </Badge>
-        <Badge tone="neutral">
-          {device}/{computeType}
-        </Badge>
-        {selectedRow?.license ? <Badge tone="warn">{selectedRow.license}</Badge> : null}
-      </div>
-      <p className="text-xs text-content-muted">
-        Active:{" "}
-        <span className="font-mono text-content-primary">
-          {activeProvider}:{activeModel}
-        </span>
-        {envProvider !== activeProvider || envModel !== activeModel ? (
-          <>
-            {" "}
-            (env <span className="font-mono">{envProvider}:{envModel}</span>)
-          </>
-        ) : null}
-        . NeMo Bhatiyali is tuned for Bangladeshi dialects; Whisper remains best for multilingual.
-      </p>
+  async function runInstall(model: VoiceModelRow) {
+    setBusy(true);
+    setPendingSwitch(null);
+    const result = await installWhisperModelAction({
+      provider,
+      model: model.id,
+      activateOnSuccess: true,
+    });
+    if (!result.ok) {
+      setBusy(false);
+      toast.push({
+        tone: "danger",
+        title: "Could not start install",
+        description: result.message,
+      });
+      return;
+    }
+    setJobId(result.jobId ?? null);
+    setJobMessage(result.message);
+    toast.push({
+      tone: "ok",
+      title: "Download started",
+      description: `${model.id} (~${model.approxDownloadGb} GB). Keep this page open.`,
+    });
+  }
 
-      <div className="flex flex-col gap-2 lg:flex-row lg:items-end">
-        <label className="flex min-w-[10rem] flex-col gap-1 text-xs text-content-secondary">
-          Provider
-          <select
-            className="input"
-            value={provider}
-            disabled={busy}
-            onChange={(e) => setProvider(e.target.value as "faster-whisper" | "nemo")}
-          >
-            {(providers.length
-              ? providers
-              : [
-                  { id: "faster-whisper" as const, label: "Faster-Whisper", available: true },
-                  { id: "nemo" as const, label: "NeMo (Bangla)", available: false },
-                ]
-            ).map((row) => (
-              <option key={row.id} value={row.id}>
-                {row.label}
-                {row.available ? "" : " (package missing)"}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex min-w-[14rem] flex-1 flex-col gap-1 text-xs text-content-secondary">
-          Model
-          <select
-            className="input"
-            value={selected}
-            disabled={busy}
-            onChange={(e) => setSelected(e.target.value)}
-          >
-            {options.map((row) => (
-              <option key={row.id} value={row.id}>
-                {row.label}
-                {row.cached ? " (cached)" : ` (~${row.approxDownloadGb} GB)`}
-                {row.active ? " — active" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={busy || (provider === "nemo" && providerMeta && !providerMeta.available)}
-            onClick={() => void install()}
-            title={
-              provider === "nemo" && providerMeta && !providerMeta.available
-                ? "pip install 'nemo_toolkit[asr]' first"
-                : undefined
-            }
-          >
-            {busy && jobId ? (
-              <Loader2 className="size-3.5 animate-spin" aria-hidden />
-            ) : (
-              <Download className="size-3.5" aria-hidden />
-            )}
-            Install &amp; activate
-          </button>
-          <button
-            type="button"
-            className="btn-ghost"
-            disabled={busy || (provider === activeProvider && !selectedRow?.cached)}
-            onClick={() => void activateOnly()}
-            title="Switch provider/model (install first if weights missing)"
-          >
-            <Power className="size-3.5" aria-hidden />
-            Activate
-          </button>
+  async function confirmPendingSwitch() {
+    if (!pendingSwitch) return;
+    if (pendingSwitch.kind === "activate") {
+      await runActivate(pendingSwitch.model);
+      return;
+    }
+    await runInstall(pendingSwitch.model);
+  }
+
+  return (
+    <div className="space-y-4 border-t border-line bg-gradient-to-b from-surface-2/60 to-transparent px-4 py-5 sm:px-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex size-7 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+              <Mic className="size-3.5" aria-hidden />
+            </span>
+            <h3 className="text-sm font-semibold tracking-tight text-content-primary">
+              Speech-to-text model
+            </h3>
+            <Badge tone={modelCached ? "ok" : "warn"} dot>
+              {modelCached ? "Weights cached" : "Weights missing"}
+            </Badge>
+            <Badge tone="neutral">
+              {device.toUpperCase()} · {computeType.toUpperCase()}
+            </Badge>
+            {selectedRow?.license ? <Badge tone="warn">{selectedRow.license}</Badge> : null}
+          </div>
+          <p className="max-w-2xl text-xs leading-relaxed text-content-muted">
+            Dialect models (BengaliAI, Bhatiyali) suit Sylheti / Chittagonian calls. Standard Whisper
+            sizes remain better for multilingual audio.
+          </p>
         </div>
       </div>
 
-      {provider === "nemo" && providerMeta && !providerMeta.available ? (
-        <p className="rounded-lg border border-danger-200 bg-danger-50 px-3 py-2 text-xs text-danger-700">
+      <div className="overflow-hidden rounded-xl border border-line bg-surface-1 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+        <div className="flex flex-col gap-3 border-b border-line bg-surface-2/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 space-y-1">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-content-muted">
+              Currently active
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-ok-50 px-2.5 py-1 text-xs font-medium text-ok-700 ring-1 ring-inset ring-ok-200">
+                <span className="size-1.5 rounded-full bg-ok-500" aria-hidden />
+                Live
+              </span>
+              <p className="truncate text-sm font-medium text-content-primary">
+                {shortModelLabel(activeModel, activeModel)}
+              </p>
+              {isDialectModel(activeModel) ? (
+                <span className="inline-flex items-center gap-1 rounded-md bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700">
+                  <Sparkles className="size-3" aria-hidden />
+                  Dialect-tuned
+                </span>
+              ) : null}
+            </div>
+            <p className="truncate font-mono text-[11px] text-content-muted">
+              {activeProvider}:{activeModel}
+            </p>
+          </div>
+          {envDiverges ? (
+            <div className="shrink-0 rounded-lg border border-line bg-surface-1 px-3 py-2 text-[11px] text-content-muted">
+              <span className="font-medium text-content-secondary">Env default</span>
+              <p className="mt-0.5 font-mono">
+                {envProvider}:{envModel}
+              </p>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="space-y-4 p-4">
+          <div className="space-y-2">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-content-muted">
+              Provider
+            </p>
+            <div
+              className="inline-flex w-full flex-col gap-1 rounded-xl border border-line bg-surface-2 p-1 sm:w-auto sm:flex-row"
+              role="tablist"
+              aria-label="STT provider"
+            >
+              {providerList.map((row) => {
+                const selectedProvider = provider === row.id;
+                return (
+                  <button
+                    key={row.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selectedProvider}
+                    disabled={busy}
+                    onClick={() => setProvider(row.id)}
+                    className={`inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
+                      selectedProvider
+                        ? "bg-surface-1 text-content-primary shadow-sm ring-1 ring-line"
+                        : "text-content-secondary hover:text-content-primary"
+                    } disabled:opacity-50`}
+                  >
+                    {row.label}
+                    {!row.available ? (
+                      <span className="text-[10px] font-normal text-content-muted">missing</span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-content-muted">
+                Models
+              </p>
+              <p className="text-[11px] text-content-muted">
+                {options.filter((row) => row.cached).length} cached · {options.length} available
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {options.map((row) => {
+                const isSelected = selected === row.id;
+                const isLive = row.active || (provider === activeProvider && row.id === activeModel);
+                const installingThis = busy && jobId && isSelected;
+                return (
+                  <div
+                    key={row.id}
+                    role="button"
+                    tabIndex={busy ? -1 : 0}
+                    aria-pressed={isSelected}
+                    onClick={() => {
+                      if (!busy) setSelected(row.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (busy) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelected(row.id);
+                      }
+                    }}
+                    className={`flex min-h-[9.5rem] flex-col rounded-xl border p-3.5 transition-all outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 ${
+                      isLive
+                        ? "border-ok-200 bg-ok-50/80 shadow-[0_0_0_1px_rgba(16,185,129,0.12)]"
+                        : isSelected
+                          ? "border-brand-200 bg-brand-50/40 shadow-sm"
+                          : "border-line bg-surface-1 hover:border-line-strong hover:bg-surface-2/40"
+                    } ${busy ? "cursor-default opacity-70" : "cursor-pointer"}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {isLive ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-ok-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ok-700 ring-1 ring-inset ring-ok-200">
+                              <span className="size-1.5 rounded-full bg-ok-500" aria-hidden />
+                              Active
+                            </span>
+                          ) : row.cached ? (
+                            <span className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-content-muted ring-1 ring-inset ring-line">
+                              Cached
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-full bg-warn-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn-700 ring-1 ring-inset ring-warn-200">
+                              Not installed
+                            </span>
+                          )}
+                          {isDialectModel(row.id) ? (
+                            <span className="inline-flex items-center gap-0.5 rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-700 ring-1 ring-inset ring-brand-100">
+                              <Sparkles className="size-2.5" aria-hidden />
+                              Dialect
+                            </span>
+                          ) : null}
+                          {isSelected && !isLive ? (
+                            <span className="inline-flex items-center gap-0.5 rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-700">
+                              <Check className="size-2.5 stroke-[3]" aria-hidden />
+                              Selected
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="text-sm font-semibold leading-snug text-content-primary">
+                          {shortModelLabel(row.id, row.label)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <p className="mt-2 line-clamp-2 font-mono text-[10px] leading-relaxed text-content-muted">
+                      {row.id}
+                    </p>
+
+                    <div className="mt-auto flex items-end justify-between gap-2 pt-3">
+                      <p className="inline-flex items-center gap-1 text-[11px] text-content-muted">
+                        <HardDrive className="size-3 shrink-0" aria-hidden />
+                        {row.cached ? "On disk" : `~${row.approxDownloadGb} GB`}
+                        {row.license ? ` · ${row.license}` : ""}
+                      </p>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          className="inline-flex size-8 items-center justify-center rounded-lg border border-line bg-surface-1 text-content-secondary transition-colors hover:bg-surface-2 hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={busy || nemoBlocked || isLive || !row.cached}
+                          title={
+                            isLive
+                              ? "Already active"
+                              : !row.cached
+                                ? "Install weights first"
+                                : "Activate this model"
+                          }
+                          aria-label={`Activate ${shortModelLabel(row.id, row.label)}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            requestSwitch("activate", row);
+                          }}
+                        >
+                          <Power className="size-3.5" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex size-8 items-center justify-center rounded-lg bg-brand-600 text-content-inverse transition-colors hover:bg-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/45 disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={busy || nemoBlocked}
+                          title={
+                            nemoBlocked
+                              ? 'pip install "nemo_toolkit[asr]" first'
+                              : "Install & activate"
+                          }
+                          aria-label={`Install and activate ${shortModelLabel(row.id, row.label)}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            requestSwitch("install", row);
+                          }}
+                        >
+                          {installingThis ? (
+                            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                          ) : (
+                            <Download className="size-3.5" aria-hidden />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-content-muted">
+              {selectionIsActive
+                ? "Selected model is already live for ASR."
+                : selectedRow?.cached
+                  ? "Power activates a cached model. Download installs weights, then activates."
+                  : "Download installs missing weights and activates the model."}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {nemoBlocked ? (
+        <p className="rounded-xl border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-xs text-danger-700">
           NeMo package missing. Install with{" "}
           <span className="font-mono">pip install &quot;nemo_toolkit[asr]&quot;</span> and ensure{" "}
           <span className="font-mono">ffmpeg</span> is on PATH for audio resampling.
@@ -274,10 +471,58 @@ export function VoiceSttControls({
       ) : null}
 
       {jobMessage ? (
-        <p className="rounded-lg border border-line bg-surface-muted px-3 py-2 font-mono text-xs text-content-secondary">
-          {jobMessage}
-        </p>
+        <div className="flex items-start gap-2 rounded-xl border border-brand-200 bg-brand-50/70 px-3.5 py-2.5">
+          {busy && jobId ? (
+            <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin text-brand-600" aria-hidden />
+          ) : null}
+          <p className="font-mono text-xs text-brand-700">{jobMessage}</p>
+        </div>
       ) : null}
+
+      <ConfirmDialog
+        open={pendingSwitch !== null}
+        tone="warn"
+        title={
+          pendingSwitch?.kind === "install"
+            ? `Install & switch to ${shortModelLabel(pendingSwitch.model.id, pendingSwitch.model.label)}?`
+            : `Switch ASR to ${pendingSwitch ? shortModelLabel(pendingSwitch.model.id, pendingSwitch.model.label) : "model"}?`
+        }
+        description={
+          pendingSwitch?.kind === "install"
+            ? "This downloads weights if needed and replaces the live speech-to-text model. New Anusandhan / voice jobs will use the selected model immediately."
+            : "This replaces the live speech-to-text model. New Anusandhan / voice jobs will use the selected model immediately."
+        }
+        confirmLabel={pendingSwitch?.kind === "install" ? "Install & switch" : "Switch model"}
+        busy={busy}
+        onCancel={() => {
+          if (!busy) setPendingSwitch(null);
+        }}
+        onConfirm={() => void confirmPendingSwitch()}
+        details={
+          pendingSwitch && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+              <dt className="text-content-muted">From</dt>
+              <dd className="break-all font-mono">
+                {activeProvider}:{activeModel}
+              </dd>
+              <dt className="text-content-muted">To</dt>
+              <dd className="break-all font-mono">
+                {provider}:{pendingSwitch.model.id}
+              </dd>
+              {pendingSwitch.kind === "install" ? (
+                <>
+                  <dt className="text-content-muted">Download</dt>
+                  <dd className="font-mono">
+                    {pendingSwitch.model.cached
+                      ? "Already cached"
+                      : `~${pendingSwitch.model.approxDownloadGb} GB`}
+                  </dd>
+                </>
+              ) : null}
+            </dl>
+          )
+        }
+      />
     </div>
   );
 }

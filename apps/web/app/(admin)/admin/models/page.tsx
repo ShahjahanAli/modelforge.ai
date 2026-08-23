@@ -7,6 +7,7 @@ import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { HuggingFaceBrowser } from "@/components/admin/HuggingFaceBrowser";
 import { RemoveModelButton } from "@/components/admin/RemoveModelButton";
+import { SetDefaultModelButton } from "@/components/admin/SetDefaultModelButton";
 import {
   grantModelToAllPlansAction,
   registerDiscoveredAction,
@@ -230,7 +231,7 @@ export default async function AdminModelsPage() {
       <Panel>
         <PanelHeader
           title="Registered models"
-          description={`${models.length} total. Inactive means not loaded into RAM — use Remove to drop a model from the catalog and chat picker.`}
+          description={`${models.length} total. Platform default is used for model:auto and is warmed into the model pool automatically.`}
         />
         {models.length === 0 ? (
           <EmptyState icon={Cpu} title="No models registered yet" />
@@ -254,8 +255,11 @@ export default async function AdminModelsPage() {
                   <tr key={model.id}>
                     <td>
                       <div className="font-medium text-content-primary">{model.displayName}</div>
-                      <div className="mt-1">
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <span className="mono-chip">{model.modelId}</span>
+                        {model.isPlatformDefault ? (
+                          <Badge tone="brand">Platform default</Badge>
+                        ) : null}
                       </div>
                     </td>
                     <td className="max-w-56 truncate font-mono text-xs">{model.weightsPath}</td>
@@ -284,12 +288,20 @@ export default async function AdminModelsPage() {
                       )}
                     </td>
                     <td className="text-right">
-                      <RemoveModelButton
-                        modelId={model.modelId}
-                        displayName={model.displayName}
-                        weightsPath={model.weightsPath}
-                        status={model.status}
-                      />
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {!model.isPlatformDefault ? (
+                          <SetDefaultModelButton
+                            modelId={model.modelId}
+                            displayName={model.displayName}
+                          />
+                        ) : null}
+                        <RemoveModelButton
+                          modelId={model.modelId}
+                          displayName={model.displayName}
+                          weightsPath={model.weightsPath}
+                          status={model.status}
+                        />
+                      </div>
                     </td>
                   </tr>
                 ))}

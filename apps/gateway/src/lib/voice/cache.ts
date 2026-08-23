@@ -1,9 +1,22 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Hugging Face Whisper fine-tunes stored in Transformers format (converted to local CT2). */
+const TRANSFORMERS_WHISPER_HF_MODELS = new Set([
+  "bengaliAI/tugstugi_bengaliai-regional-asr_whisper-medium",
+]);
+
 export function whisperHubRepoId(model: string): string {
   return model.includes("/") ? model : `Systran/faster-whisper-${model}`;
+}
+
+function repoRoot(): string {
+  return path.resolve(import.meta.dirname, "../../../../..");
+}
+
+function ct2LocalDir(model: string): string {
+  return path.join(repoRoot(), "data", "voice", "ct2", model.replaceAll("/", "--"));
 }
 
 function hubSnapshotsDir(repoId: string): string {
@@ -12,8 +25,31 @@ function hubSnapshotsDir(repoId: string): string {
   return path.join(hfHome, "hub", dirname, "snapshots");
 }
 
+function isCt2WeightsDir(root: string): boolean {
+  if (existsSync(path.join(root, "model.bin"))) return true;
+  const safetensors = path.join(root, "model.safetensors");
+  if (!existsSync(safetensors)) return false;
+  const configPath = path.join(root, "config.json");
+  if (!existsSync(configPath)) return true;
+  try {
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as { architectures?: string[] };
+    const architectures = config.architectures ?? [];
+    if (architectures.length === 0) return true;
+    return !architectures.some((entry) => entry.includes("Whisper"));
+  } catch {
+    return true;
+  }
+}
+
 /** True when HF hub cache already has Whisper CTranslate2 weights for this model. */
 export function isWhisperModelCachedOnDisk(model: string): boolean {
+  const localCt2 = ct2LocalDir(model);
+  if (isCt2WeightsDir(localCt2)) return true;
+
+  if (TRANSFORMERS_WHISPER_HF_MODELS.has(model)) {
+    return false;
+  }
+
   const snapshots = hubSnapshotsDir(whisperHubRepoId(model));
   if (!existsSync(snapshots)) return false;
   let snaps: string[];
@@ -24,9 +60,7 @@ export function isWhisperModelCachedOnDisk(model: string): boolean {
   }
   for (const snap of snaps) {
     const root = path.join(snapshots, snap);
-    if (existsSync(path.join(root, "model.bin")) || existsSync(path.join(root, "model.safetensors"))) {
-      return true;
-    }
+    if (isCt2WeightsDir(root)) return true;
   }
   return false;
 }
