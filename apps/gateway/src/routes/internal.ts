@@ -24,6 +24,7 @@ import {
   startHuggingFaceDownload,
 } from "../lib/huggingFace.js";
 import { probeVoiceStatus, resetSttProviderCache } from "../lib/voice/index.js";
+import { diarizationVoiceEnvFields, resolveDiarizationBackend } from "../lib/voice/diarizationConfig.js";
 import {
   catalogForProvider,
   getVoiceModelJob,
@@ -43,6 +44,7 @@ internalRouter.use(internalAuth);
 
 function voiceEnvFromProcess() {
   const env = loadEnv();
+  const diarization = diarizationVoiceEnvFields();
   return {
     VOICE_ENABLED: env.VOICE_ENABLED,
     VOICE_UPLOAD_DIR: env.VOICE_UPLOAD_DIR,
@@ -63,18 +65,24 @@ function voiceEnvFromProcess() {
     STT_NEMO_MODEL: env.STT_NEMO_MODEL,
     STT_NEMO_DEVICE: env.STT_NEMO_DEVICE,
     STT_NEMO_SCRIPT: env.STT_NEMO_SCRIPT,
-    DIARIZATION_ENABLED: env.DIARIZATION_ENABLED,
-    DIARIZATION_PROVIDER: env.DIARIZATION_PROVIDER,
-    DIARIZATION_MODEL: env.DIARIZATION_MODEL,
-    DIARIZATION_DEVICE: env.DIARIZATION_DEVICE,
-    DIARIZATION_SCRIPT: env.DIARIZATION_SCRIPT,
-    DIARIZATION_MIN_SPEAKERS: env.DIARIZATION_MIN_SPEAKERS,
-    DIARIZATION_MAX_SPEAKERS: env.DIARIZATION_MAX_SPEAKERS,
+    STT_HF_SPACE_ID: env.STT_HF_SPACE_ID,
+    STT_HF_SPACE_URL: env.STT_HF_SPACE_URL,
+    STT_HF_SPACE_FN_INDEX: env.STT_HF_SPACE_FN_INDEX,
+    HF_TOKEN: env.HF_TOKEN ?? process.env.HF_TOKEN ?? process.env.HUGGING_FACE_HUB_TOKEN ?? "",
+    ...diarization,
+    // Prefer zod-validated backend from loadEnv when set.
+    DIARIZATION_BACKEND: resolveDiarizationBackend(
+      env.DIARIZATION_BACKEND ?? diarization.DIARIZATION_BACKEND,
+    ),
+    DIARIZATION_CLOUD_MODEL:
+      env.DIARIZATION_CLOUD_MODEL?.trim() || diarization.DIARIZATION_CLOUD_MODEL,
+    PYANNOTE_API_KEY: env.PYANNOTE_API_KEY?.trim() || diarization.PYANNOTE_API_KEY,
   };
 }
 
 function parseProvider(value: unknown): SttProviderId {
-  return value === "nemo" ? "nemo" : "faster-whisper";
+  if (value === "nemo" || value === "hf-space" || value === "faster-whisper") return value;
+  return "faster-whisper";
 }
 
 function normalizedWeightPath(value: string): string {
@@ -308,7 +316,12 @@ internalRouter.post("/voice/models/install", async (req, res) => {
       pythonBin: env.STT_PYTHON_BIN,
       scriptPath: provider === "nemo" ? env.STT_NEMO_SCRIPT : env.STT_FASTER_WHISPER_SCRIPT,
       model,
-      device: provider === "nemo" ? env.STT_NEMO_DEVICE : env.STT_FASTER_WHISPER_DEVICE,
+      device:
+        provider === "nemo"
+          ? env.STT_NEMO_DEVICE
+          : provider === "hf-space"
+            ? "remote"
+            : env.STT_FASTER_WHISPER_DEVICE,
       computeType: env.STT_FASTER_WHISPER_COMPUTE_TYPE,
       activateOnSuccess,
     });
@@ -333,6 +346,7 @@ internalRouter.post("/voice/models/activate", async (req, res) => {
       provider: env.STT_PROVIDER,
       whisperModel: env.STT_FASTER_WHISPER_MODEL,
       nemoModel: env.STT_NEMO_MODEL,
+      hfSpaceModel: env.STT_HF_SPACE_ID,
     });
     res.json({ ok: true, provider: active.provider, model: active.model, runtime });
   } catch (error) {

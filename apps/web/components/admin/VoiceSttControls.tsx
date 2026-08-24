@@ -27,7 +27,7 @@ export interface VoiceModelRow {
 }
 
 export interface VoiceProviderRow {
-  id: "faster-whisper" | "nemo";
+  id: "faster-whisper" | "nemo" | "hf-space";
   label: string;
   available: boolean;
 }
@@ -66,7 +66,19 @@ const NEMO_FALLBACK: VoiceModelRow[] = [
   },
 ];
 
+const HF_SPACE_FALLBACK: VoiceModelRow[] = [
+  {
+    id: "bengaliAI/regional_bengali-asr_tugstugi_whisper-medium",
+    label: "BengaliAI Regional ASR (HF Space)",
+    approxDownloadGb: 0,
+    cached: true,
+    active: false,
+    license: "Remote Space",
+  },
+];
+
 function shortModelLabel(id: string, label: string): string {
+  if (id.includes("regional_bengali-asr")) return "BengaliAI HF Space";
   if (id.includes("bengaliAI") || id.includes("tugstugi")) return "BengaliAI Regional";
   if (id.includes("bhatiyali") || id.includes("kazalbrur")) return "Bhatiyali Dialect";
   return label;
@@ -90,7 +102,7 @@ export function VoiceSttControls({
 }: {
   models: VoiceModelRow[];
   providers: VoiceProviderRow[];
-  activeProvider: "faster-whisper" | "nemo";
+  activeProvider: "faster-whisper" | "nemo" | "hf-space";
   activeModel: string;
   envModel: string;
   envProvider: string;
@@ -101,7 +113,7 @@ export function VoiceSttControls({
 }) {
   const router = useRouter();
   const toast = useToast();
-  const [provider, setProvider] = useState<"faster-whisper" | "nemo">(activeProvider);
+  const [provider, setProvider] = useState<"faster-whisper" | "nemo" | "hf-space">(activeProvider);
   const [selected, setSelected] = useState(activeModel);
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(initialJobId ?? null);
@@ -146,7 +158,9 @@ export function VoiceSttControls({
 
   const options = useMemo(() => {
     if (provider === activeProvider && models.length > 0) return models;
-    return provider === "nemo" ? NEMO_FALLBACK : WHISPER_FALLBACK;
+    if (provider === "nemo") return NEMO_FALLBACK;
+    if (provider === "hf-space") return HF_SPACE_FALLBACK;
+    return WHISPER_FALLBACK;
   }, [activeProvider, models, provider]);
 
   useEffect(() => {
@@ -158,6 +172,7 @@ export function VoiceSttControls({
   const selectedRow = options.find((row) => row.id === selected);
   const providerMeta = providers.find((row) => row.id === provider);
   const nemoBlocked = Boolean(provider === "nemo" && providerMeta && !providerMeta.available);
+  const hfSpaceBlocked = Boolean(provider === "hf-space" && providerMeta && !providerMeta.available);
   const envDiverges = envProvider !== activeProvider || envModel !== activeModel;
   const selectionIsActive = provider === activeProvider && selected === activeModel;
 
@@ -166,6 +181,7 @@ export function VoiceSttControls({
     : [
         { id: "faster-whisper" as const, label: "Faster-Whisper", available: true },
         { id: "nemo" as const, label: "NeMo (Bangla)", available: false },
+        { id: "hf-space" as const, label: "HF Space (BengaliAI)", available: false },
       ];
 
   function requestSwitch(kind: "activate" | "install", model: VoiceModelRow) {
@@ -243,8 +259,9 @@ export function VoiceSttControls({
             {selectedRow?.license ? <Badge tone="warn">{selectedRow.license}</Badge> : null}
           </div>
           <p className="max-w-2xl text-xs leading-relaxed text-content-muted">
-            Dialect models (BengaliAI, Bhatiyali) suit Sylheti / Chittagonian calls. Standard Whisper
-            sizes remain better for multilingual audio.
+            Dialect models (BengaliAI, Bhatiyali) suit Sylheti / Chittagonian calls. Use{" "}
+            <strong>HF Space (BengaliAI)</strong> to call the hosted Gradio Space remotely (no local
+            Whisper weights). Standard Whisper sizes remain better for multilingual audio.
           </p>
         </div>
       </div>
@@ -366,6 +383,10 @@ export function VoiceSttControls({
                               <span className="size-1.5 rounded-full bg-ok-500" aria-hidden />
                               Active
                             </span>
+                          ) : provider === "hf-space" ? (
+                            <span className="inline-flex items-center rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-700 ring-1 ring-inset ring-brand-100">
+                              Remote
+                            </span>
                           ) : row.cached ? (
                             <span className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-content-muted ring-1 ring-inset ring-line">
                               Cached
@@ -401,20 +422,32 @@ export function VoiceSttControls({
                     <div className="mt-auto flex items-end justify-between gap-2 pt-3">
                       <p className="inline-flex items-center gap-1 text-[11px] text-content-muted">
                         <HardDrive className="size-3 shrink-0" aria-hidden />
-                        {row.cached ? "On disk" : `~${row.approxDownloadGb} GB`}
+                        {provider === "hf-space"
+                          ? "Remote Space"
+                          : row.cached
+                            ? "On disk"
+                            : `~${row.approxDownloadGb} GB`}
                         {row.license ? ` · ${row.license}` : ""}
                       </p>
                       <div className="flex shrink-0 items-center gap-1.5">
                         <button
                           type="button"
                           className="inline-flex size-8 items-center justify-center rounded-lg border border-line bg-surface-1 text-content-secondary transition-colors hover:bg-surface-2 hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 disabled:cursor-not-allowed disabled:opacity-40"
-                          disabled={busy || nemoBlocked || isLive || !row.cached}
+                          disabled={
+                            busy ||
+                            nemoBlocked ||
+                            hfSpaceBlocked ||
+                            isLive ||
+                            (provider !== "hf-space" && !row.cached)
+                          }
                           title={
                             isLive
                               ? "Already active"
-                              : !row.cached
-                                ? "Install weights first"
-                                : "Activate this model"
+                              : hfSpaceBlocked
+                                ? "HF_TOKEN missing or Space unreachable"
+                                : provider !== "hf-space" && !row.cached
+                                  ? "Install weights first"
+                                  : "Activate this model"
                           }
                           aria-label={`Activate ${shortModelLabel(row.id, row.label)}`}
                           onClick={(event) => {
@@ -427,13 +460,17 @@ export function VoiceSttControls({
                         <button
                           type="button"
                           className="inline-flex size-8 items-center justify-center rounded-lg bg-brand-600 text-content-inverse transition-colors hover:bg-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/45 disabled:cursor-not-allowed disabled:opacity-40"
-                          disabled={busy || nemoBlocked}
+                          disabled={busy || nemoBlocked || hfSpaceBlocked}
                           title={
                             nemoBlocked
                               ? 'pip install "nemo_toolkit[asr]" first'
-                              : "Install & activate"
+                              : hfSpaceBlocked
+                                ? "Set HF_TOKEN and ensure the Space is awake"
+                                : provider === "hf-space"
+                                  ? "Connect & activate remote Space"
+                                  : "Install & activate"
                           }
-                          aria-label={`Install and activate ${shortModelLabel(row.id, row.label)}`}
+                          aria-label={`${provider === "hf-space" ? "Connect" : "Install"} and activate ${shortModelLabel(row.id, row.label)}`}
                           onClick={(event) => {
                             event.stopPropagation();
                             requestSwitch("install", row);
@@ -454,9 +491,11 @@ export function VoiceSttControls({
             <p className="text-xs text-content-muted">
               {selectionIsActive
                 ? "Selected model is already live for ASR."
-                : selectedRow?.cached
-                  ? "Power activates a cached model. Download installs weights, then activates."
-                  : "Download installs missing weights and activates the model."}
+                : provider === "hf-space"
+                  ? "Connect activates the remote Hugging Face Space for Anusandhan ASR (requires HF_TOKEN)."
+                  : selectedRow?.cached
+                    ? "Power activates a cached model. Download installs weights, then activates."
+                    : "Download installs missing weights and activates the model."}
             </p>
           </div>
         </div>
@@ -467,6 +506,16 @@ export function VoiceSttControls({
           NeMo package missing. Install with{" "}
           <span className="font-mono">pip install &quot;nemo_toolkit[asr]&quot;</span> and ensure{" "}
           <span className="font-mono">ffmpeg</span> is on PATH for audio resampling.
+        </p>
+      ) : null}
+
+      {hfSpaceBlocked ? (
+        <p className="rounded-xl border border-danger-200 bg-danger-50 px-3.5 py-2.5 text-xs text-danger-700">
+          Hugging Face Space unreachable right now. Confirm the Space is awake at{" "}
+          <span className="font-mono">bengaliAI/regional_bengali-asr_tugstugi_whisper-medium</span>
+          , then refresh this page. For private Spaces, set <span className="font-mono">HF_TOKEN</span>{" "}
+          in the root <span className="font-mono">.env</span> and restart the gateway (
+          <span className="font-mono">pnpm dev</span> from repo root so dotenv loads).
         </p>
       ) : null}
 
@@ -484,15 +533,25 @@ export function VoiceSttControls({
         tone="warn"
         title={
           pendingSwitch?.kind === "install"
-            ? `Install & switch to ${shortModelLabel(pendingSwitch.model.id, pendingSwitch.model.label)}?`
+            ? provider === "hf-space"
+              ? `Connect & switch to ${shortModelLabel(pendingSwitch.model.id, pendingSwitch.model.label)}?`
+              : `Install & switch to ${shortModelLabel(pendingSwitch.model.id, pendingSwitch.model.label)}?`
             : `Switch ASR to ${pendingSwitch ? shortModelLabel(pendingSwitch.model.id, pendingSwitch.model.label) : "model"}?`
         }
         description={
           pendingSwitch?.kind === "install"
-            ? "This downloads weights if needed and replaces the live speech-to-text model. New Anusandhan / voice jobs will use the selected model immediately."
+            ? provider === "hf-space"
+              ? "This connects the remote Hugging Face Space and replaces the live speech-to-text provider. New Anusandhan / voice jobs will call the Space immediately."
+              : "This downloads weights if needed and replaces the live speech-to-text model. New Anusandhan / voice jobs will use the selected model immediately."
             : "This replaces the live speech-to-text model. New Anusandhan / voice jobs will use the selected model immediately."
         }
-        confirmLabel={pendingSwitch?.kind === "install" ? "Install & switch" : "Switch model"}
+        confirmLabel={
+          pendingSwitch?.kind === "install"
+            ? provider === "hf-space"
+              ? "Connect & switch"
+              : "Install & switch"
+            : "Switch model"
+        }
         busy={busy}
         onCancel={() => {
           if (!busy) setPendingSwitch(null);

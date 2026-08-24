@@ -24,6 +24,11 @@ enum ModelStatus {
   ERROR
 }
 
+enum InferenceProviderKind {
+  LOCAL_GGUF
+  OPENAI_COMPAT
+}
+
 enum InvoiceStatus {
   DRAFT
   SENT
@@ -211,9 +216,10 @@ model HostedModel {
   id                String                 @id @default(cuid())
   modelId           String                 @unique
   displayName       String
-  weightsPath       String
-  quantization      String
-  contextLength     Int
+  /// Local GGUF path; empty / sentinel for remote OpenAI-compatible models.
+  weightsPath       String                 @default("")
+  quantization      String                 @default("remote")
+  contextLength     Int                    @default(8192)
   nThreads          Int                    @default(8)
   gpuLayers         Int                    @default(0)
   status            ModelStatus            @default(INACTIVE)
@@ -224,6 +230,14 @@ model HostedModel {
   latencyClass      Int                    @default(50)
   supportsTools     Boolean                @default(false)
   isPlatformDefault Boolean                @default(false)
+  /// LOCAL_GGUF = llama-server pool; OPENAI_COMPAT = OpenRouter / OpenAI / etc.
+  providerKind      InferenceProviderKind  @default(LOCAL_GGUF)
+  /// e.g. https://openrouter.ai/api/v1
+  remoteBaseUrl     String?
+  /// Upstream model id sent in the OpenAI-compatible request body.
+  remoteModelId     String?
+  credential        ProviderCredential?    @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  credentialId      String?
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
   usageEvents       UsageEvent[]
@@ -234,6 +248,26 @@ model HostedModel {
   canaries          CanaryChannel[]
   inferenceReqs     InferenceRequest[]     @relation("RequestedModel")
   resolvedReqs      InferenceRequest[]     @relation("ResolvedModel")
+
+  @@index([providerKind])
+  @@index([credentialId])
+}
+
+/// Encrypted outbound API keys for remote LLM providers (AES-GCM). Not customer API keys.
+model ProviderCredential {
+  id           String                @id @default(cuid())
+  label        String
+  providerKind InferenceProviderKind @default(OPENAI_COMPAT)
+  /// base64(ciphertext)
+  ciphertext   String
+  /// base64(iv)
+  iv           String
+  /// base64(authTag)
+  authTag      String
+  keyPrefix    String
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  models       HostedModel[]
 }
 
 model PricingVersion {

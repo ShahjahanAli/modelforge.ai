@@ -43,7 +43,11 @@ interface VoiceStatus {
   computeType?: string;
   modelCached?: boolean;
   models?: VoiceModelRow[];
-  providers?: Array<{ id: "faster-whisper" | "nemo"; label: string; available: boolean }>;
+  providers?: Array<{
+    id: "faster-whisper" | "nemo" | "hf-space";
+    label: string;
+    available: boolean;
+  }>;
   activeInstall?: {
     id: string;
     provider?: string;
@@ -59,14 +63,19 @@ interface VoiceStatus {
   pythonVersion?: string | null;
   fasterWhisperAvailable?: boolean;
   nemoAvailable?: boolean;
+  hfSpaceAvailable?: boolean;
+  hfSpaceUrl?: string | null;
   diarization?: {
     enabled?: boolean;
+    backend?: "local" | "cloud";
+    mode?: "per-turn" | "merge";
     provider?: string;
     model?: string;
     device?: string;
     available?: boolean;
     scriptExists?: boolean;
     hfTokenConfigured?: boolean;
+    apiKeyConfigured?: boolean;
     error?: string;
   };
   ready?: boolean;
@@ -233,22 +242,36 @@ export default async function AdminInfraPage() {
             value={
               !voice.diarization?.enabled
                 ? "OFF"
-                : voice.diarization.available
-                  ? "PYANNOTE ON"
-                  : "NOT READY"
+                : !voice.diarization.backend
+                  ? "…"
+                  : voice.diarization.available
+                    ? voice.diarization.backend === "cloud"
+                      ? "CLOUD ON"
+                      : "LOCAL ON"
+                    : "NOT READY"
             }
             icon={Users}
             accent={
               !voice.diarization?.enabled
                 ? "brand"
-                : voice.diarization.available
-                  ? "ok"
-                  : "warn"
+                : !voice.diarization.backend
+                  ? "warn"
+                  : voice.diarization.available
+                    ? "ok"
+                    : "warn"
             }
             hint={
               voice.diarization?.enabled
-                ? `${voice.diarization.model ?? "pyannote"} · ${
-                    voice.diarization.hfTokenConfigured ? "HF_TOKEN ok" : "HF_TOKEN missing"
+                ? `${voice.diarization.backend ?? "?"} · ${voice.diarization.model ?? "pyannote"} · ${
+                    voice.diarization.mode ?? "per-turn"
+                  } · ${
+                    voice.diarization.backend === "cloud"
+                      ? voice.diarization.apiKeyConfigured
+                        ? "API key ok"
+                        : "PYANNOTE_API_KEY missing"
+                      : voice.diarization.hfTokenConfigured
+                        ? "HF_TOKEN ok"
+                        : "HF_TOKEN missing"
                   }`
                 : "set DIARIZATION_ENABLED=true"
             }
@@ -257,10 +280,22 @@ export default async function AdminInfraPage() {
         <VoiceSttControls
           models={voice.models ?? []}
           providers={voice.providers ?? []}
-          activeProvider={voice.provider === "nemo" ? "nemo" : "faster-whisper"}
+          activeProvider={
+            voice.provider === "nemo"
+              ? "nemo"
+              : voice.provider === "hf-space"
+                ? "hf-space"
+                : "faster-whisper"
+          }
           activeModel={voice.configuredModel ?? "small"}
           envModel={voice.envModel ?? voice.configuredModel ?? "small"}
-          envProvider={voice.envProvider === "nemo" ? "nemo" : "faster-whisper"}
+          envProvider={
+            voice.envProvider === "nemo"
+              ? "nemo"
+              : voice.envProvider === "hf-space"
+                ? "hf-space"
+                : "faster-whisper"
+          }
           device={voice.device ?? "cpu"}
           computeType={voice.computeType ?? "int8"}
           modelCached={Boolean(voice.modelCached)}
@@ -282,14 +317,18 @@ export default async function AdminInfraPage() {
             <strong className="text-content-primary">Diarization:</strong>{" "}
             {voice.diarization?.enabled
               ? voice.diarization.available
-                ? `ON · ${voice.diarization.model ?? "pyannote"}`
+                ? `ON · ${voice.diarization.backend ?? "local"} · ${voice.diarization.model ?? "pyannote"} · ${voice.diarization.mode ?? "per-turn"}`
                 : "ON · not ready"
               : "OFF"}
-            {voice.diarization?.hfTokenConfigured === false
-              ? " · HF_TOKEN missing"
-              : voice.diarization?.enabled
-                ? " · HF_TOKEN ok"
-                : ""}
+            {voice.diarization?.enabled
+              ? voice.diarization.backend === "cloud"
+                ? voice.diarization.apiKeyConfigured
+                  ? " · API key ok"
+                  : " · PYANNOTE_API_KEY missing"
+                : voice.diarization.hfTokenConfigured === false
+                  ? " · HF_TOKEN missing"
+                  : " · HF_TOKEN ok"
+              : ""}
           </p>
           <p className="sm:col-span-2">
             <strong className="text-content-primary">Python bin:</strong>{" "}

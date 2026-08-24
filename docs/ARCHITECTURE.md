@@ -217,7 +217,12 @@ flowchart TD
 | `LLAMA_SINGLE_DEFAULT` | Evict every other resident GGUF on warm / Anusandhan chat |
 | `LLAMA_AUTO_LOAD` | Cold-start a model on first request if not loaded |
 | `TOTAL_RAM_BUDGET_MB` | Pool RAM ceiling |
-| `isPlatformDefault` (DB) | Which hosted model is “the” default (e.g. Qwen3 8B) |
+| `isPlatformDefault` (DB) | Which hosted model is “the” default (local GGUF or remote OpenAI-compatible) |
+| `PROVIDER_CREDENTIALS_MASTER_KEY` | AES key for remote provider API secrets (falls back to `JWT_SECRET`) |
+| `OPENROUTER_API_KEY` / `OPENROUTER_BASE_URL` | Optional env fallback for OpenRouter |
+| `GEMINI_API_KEY` / `GEMINI_BASE_URL` | Optional env fallback for Google Gemini (OpenAI-compatible endpoint) |
+
+**Remote providers:** Admin → Models → **Remote LLM provider** registers `OPENAI_COMPAT` models (Gemini, OpenRouter, OpenAI, or custom). Gemini uses `https://generativelanguage.googleapis.com/v1beta/openai`. Set as platform default to switch chat / Anusandhan off local GGUF. Keys are AES-GCM encrypted in `ProviderCredential`.
 
 Anusandhan must not depend on cheapest/`auto` fallbacks — `/v1/anusandhan/chat/completions` always resolves the platform default.
 
@@ -257,7 +262,7 @@ Admin UI: **Infra → Speech-to-text model** (`VoiceSttControls`) — card grid,
 | `POST /v1/voice/analyze` | Yes | Optional | Yes — analysis on platform default |
 | `POST /v1/anusandhan/voice/transcribe` | Yes | Optional | **No** |
 
-Diarization (when enabled): full-file ASR + pyannote speaker turns, then align / merge segments (2-party calls via `DIARIZATION_MIN_SPEAKERS` / `MAX`).
+Diarization (when enabled): **diarize first** (local pyannote.audio or **pyannoteAI cloud Precision-2**), then **ASR each speaker turn**, then combine into chat-ready segments. Fallback: full-file ASR + turn merge. Configure with `DIARIZATION_BACKEND=cloud|local`, `DIARIZATION_MODE=per-turn`, `PYANNOTE_API_KEY`, `DIARIZATION_CLOUD_MODEL=precision-2`.
 
 ---
 

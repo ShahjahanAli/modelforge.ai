@@ -36,6 +36,15 @@ export const NEMO_MODEL_CATALOG = [
   },
 ] as const;
 
+export const HF_SPACE_MODEL_CATALOG = [
+  {
+    id: "bengaliAI/regional_bengali-asr_tugstugi_whisper-medium",
+    label: "BengaliAI Regional ASR (HF Space)",
+    approxDownloadGb: 0,
+    license: "Remote Space",
+  },
+] as const;
+
 export interface VoiceModelJob {
   id: string;
   provider: SttProviderId;
@@ -52,7 +61,9 @@ const jobs = new Map<string, VoiceModelJob>();
 let activeInstallId: string | null = null;
 
 export function catalogForProvider(provider: SttProviderId) {
-  return provider === "nemo" ? NEMO_MODEL_CATALOG : WHISPER_MODEL_CATALOG;
+  if (provider === "nemo") return NEMO_MODEL_CATALOG;
+  if (provider === "hf-space") return HF_SPACE_MODEL_CATALOG;
+  return WHISPER_MODEL_CATALOG;
 }
 
 function isAllowedModel(provider: SttProviderId, model: string): boolean {
@@ -132,6 +143,30 @@ export async function startSttModelInstall(input: {
 
   void (async () => {
     job.status = "downloading";
+    if (provider === "hf-space") {
+      job.message = `Connecting Hugging Face Space ${model}`;
+      try {
+        if (job.activateOnSuccess) {
+          await writeVoiceRuntimeConfig({ provider, model });
+          const { resetSttProviderCache } = await import("./index.js");
+          resetSttProviderCache();
+          job.message = `${provider}:${model} connected and activated (remote Space — no local weights)`;
+        } else {
+          job.message = `${provider}:${model} connected (not activated)`;
+        }
+        job.status = "succeeded";
+        job.finishedAt = new Date().toISOString();
+      } catch (error) {
+        job.status = "failed";
+        job.error = error instanceof Error ? error.message : "Connect failed";
+        job.message = job.error;
+        job.finishedAt = new Date().toISOString();
+      } finally {
+        if (activeInstallId === job.id) activeInstallId = null;
+      }
+      return;
+    }
+
     job.message =
       provider === "nemo"
         ? `Downloading NeMo ASR ${model} (first run may take several minutes)`

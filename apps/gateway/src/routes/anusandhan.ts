@@ -123,9 +123,19 @@ anusandhanRouter.post(
         "audio/mp3",
         "audio/mp4",
         "audio/x-m4a",
+        "audio/m4a",
+        "audio/aac",
+        "audio/x-aac",
         "audio/ogg",
+        "application/octet-stream",
       ]);
-      if (mimeType && !allowed.has(mimeType)) {
+      const fileNameHint = String(req.header("x-audio-filename") ?? "").toLowerCase();
+      const aacByName = /\.(aac|m4a)$/i.test(fileNameHint);
+      if (
+        mimeType &&
+        !allowed.has(mimeType.split(";")[0]!.trim().toLowerCase()) &&
+        !(aacByName && mimeType.includes("octet-stream"))
+      ) {
         return res.status(415).json({
           error: { type: "unsupported_media_type", message: `Unsupported audio type: ${mimeType}` },
         });
@@ -282,6 +292,7 @@ anusandhanRouter.post(
           top_p: body.top_p,
           stop_sequences: body.stop,
           stream: false,
+          response_format: body.response_format,
         },
         undefined,
         { deadlineMs: Number(process.env.INFERENCE_TIMEOUT_MS ?? 900_000) },

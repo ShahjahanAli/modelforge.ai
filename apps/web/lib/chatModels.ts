@@ -5,8 +5,7 @@ import type { ChatModelOption, KnowledgeBaseOption } from "@/components/chat/use
 
 /**
  * Models the signed-in subscriber may pick in chat: granted by their plan and
- * currently resident (LOADED). Inactive registry rows stay entitled for Auto
- * route / first-token load, but they are not listed as selectable models.
+ * currently available (LOADED local GGUF, or configured remote OpenAI-compatible).
  * Admins have no chat credential of their own, so they get an empty list.
  */
 export async function chatModelsForSession(): Promise<ChatModelOption[]> {
@@ -20,7 +19,9 @@ export async function chatModelsForSession(): Promise<ChatModelOption[]> {
       include: { plan: true },
     }),
     prisma.hostedModel.findMany({
-      where: { status: "LOADED" },
+      where: {
+        OR: [{ status: "LOADED" }, { providerKind: "OPENAI_COMPAT", status: { not: "ERROR" } }],
+      },
       orderBy: { displayName: "asc" },
     }),
   ]);

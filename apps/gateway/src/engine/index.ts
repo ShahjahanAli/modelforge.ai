@@ -1,16 +1,16 @@
 import * as grpcBackend from "../grpc/client.js";
 import * as llamaBackend from "./llamaServer.js";
+import * as remoteOpenAi from "./remoteOpenAi.js";
 import { prisma } from "@modelforge/db";
+import { isRemoteProviderKind } from "../lib/providerCredentials.js";
 
 export type { GenerateChunk, HealthStatus, LoadedModel } from "../grpc/client.js";
 
 /**
- * Two interchangeable inference backends:
- *
- * - `llama-server` (default) spawns prebuilt llama.cpp binaries, so no C++
- *   toolchain is needed. This is how LM Studio works and is the local default.
- * - `grpc` talks to the Rust inference engine, which compiles llama.cpp in-process
- *   and adds custom continuous batching. Useful where a toolchain is available.
+ * Inference backends:
+ * - `llama-server` (default) — local GGUF via prebuilt llama.cpp
+ * - `grpc` — Rust in-process engine
+ * - HostedModel.providerKind=OPENAI_COMPAT — Gemini / OpenRouter / OpenAI-compatible HTTP
  */
 export type InferenceBackend = "llama-server" | "grpc";
 
@@ -20,19 +20,79 @@ export function activeBackend(): InferenceBackend {
 
 const isGrpcBackend = () => activeBackend() === "grpc";
 
-export const generateStream: typeof grpcBackend.generateStream = (req, url, options) =>
-  isGrpcBackend()
-    ? grpcBackend.generateStream(req, url, options)
-    : llamaBackend.generateStream(req, url, options);
+async function isRemoteModel(modelId: string): Promise<boolean> {
+  const hosted = await prisma.hostedModel.findUnique({
+    where: { modelId },
+    select: { providerKind: true },
+  });
+  return isRemoteProviderKind(hosted?.providerKind);
+}
 
-export const loadModel: typeof grpcBackend.loadModel = (req) =>
-  isGrpcBackend() ? grpcBackend.loadModel(req) : llamaBackend.loadModel(req);
+export function generateStream(
+  req: Parameters<typeof grpcBackend.generateStream>[0],
+  url?: string,
+  options?: Parameters<typeof grpcBackend.generateStream>[2],
+): AsyncIterable<import("../grpc/client.js").GenerateChunk> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      if (await isRemoteModel(req.model_id)) {
+        const remote = remoteOpenAi.generateStream(req, url, options);
+        for await (const chunk of remote) yield chunk;
+        return;
+      }
+      const local = isGrpcBackend()
+        ? grpcBackend.generateStream(req, url, options)
+        : llamaBackend.generateStream(req, url, options);
+      for await (const chunk of local) yield chunk;
+    },
+  };
+}
 
-export const unloadModel: typeof grpcBackend.unloadModel = (modelId) =>
-  isGrpcBackend() ? grpcBackend.unloadModel(modelId) : llamaBackend.unloadModel(modelId);
+export const loadModel: typeof grpcBackend.loadModel = async (req) => {
+  if (await isRemoteModel(req.model_id)) {
+    await prisma.hostedModel.updateMany({
+      where: { modelId: req.model_id },
+      data: { status: "LOADED" },
+    });
+    return {
+      success: true,
+      message: "remote OpenAI-compatible model marked available (no local load)",
+      ram_used_mb: 0,
+    };
+  }
+  return isGrpcBackend() ? grpcBackend.loadModel(req) : llamaBackend.loadModel(req);
+};
 
-export const listLoadedModels: typeof grpcBackend.listLoadedModels = () =>
-  isGrpcBackend() ? grpcBackend.listLoadedModels() : llamaBackend.listLoadedModels();
+export const unloadModel: typeof grpcBackend.unloadModel = async (modelId) => {
+  if (await isRemoteModel(modelId)) {
+    await prisma.hostedModel.updateMany({
+      where: { modelId },
+      data: { status: "INACTIVE" },
+    });
+    return { success: true, message: "remote model marked inactive" };
+  }
+  return isGrpcBackend() ? grpcBackend.unloadModel(modelId) : llamaBackend.unloadModel(modelId);
+};
+
+export const listLoadedModels: typeof grpcBackend.listLoadedModels = async () => {
+  const local = isGrpcBackend()
+    ? await grpcBackend.listLoadedModels()
+    : await llamaBackend.listLoadedModels();
+  const remotes = await prisma.hostedModel.findMany({
+    where: { providerKind: "OPENAI_COMPAT", status: "LOADED" },
+    select: { modelId: true },
+  });
+  const remoteEntries = remotes.map((model) => ({
+    model_id: model.modelId,
+    ram_used_mb: 0,
+    active_requests: 0,
+    loaded_at_unix: Math.floor(Date.now() / 1000),
+    tokens_per_sec_avg: 0,
+  }));
+  return {
+    models: [...local.models, ...remoteEntries],
+  };
+};
 
 export const healthCheck: typeof grpcBackend.healthCheck = () =>
   isGrpcBackend() ? grpcBackend.healthCheck() : llamaBackend.healthCheck();
@@ -43,6 +103,7 @@ export async function reconcileModelRegistry(): Promise<void> {
   await prisma.$transaction([
     prisma.hostedModel.updateMany({
       where: {
+        providerKind: "LOCAL_GGUF",
         status: "LOADED",
         ...(residentIds.length > 0 ? { modelId: { notIn: residentIds } } : {}),
       },
@@ -51,7 +112,10 @@ export async function reconcileModelRegistry(): Promise<void> {
     ...(residentIds.length > 0
       ? [
           prisma.hostedModel.updateMany({
-            where: { modelId: { in: residentIds } },
+            where: {
+              modelId: { in: residentIds },
+              providerKind: "LOCAL_GGUF",
+            },
             data: { status: "LOADED" as const },
           }),
         ]
@@ -59,12 +123,13 @@ export async function reconcileModelRegistry(): Promise<void> {
   ]);
 }
 
-/** Unload every resident model except `keepModelId` (best-effort). */
+/** Unload every resident local model except `keepModelId` (best-effort). Remotes are left alone. */
 export async function unloadAllExcept(keepModelId: string): Promise<string[]> {
   const resident = await listLoadedModels();
   const unloaded: string[] = [];
   for (const model of resident.models) {
     if (model.model_id === keepModelId) continue;
+    if (await isRemoteModel(model.model_id)) continue;
     try {
       const result = await unloadModel(model.model_id);
       if (result.success) {
@@ -84,7 +149,7 @@ export async function unloadAllExcept(keepModelId: string): Promise<string[]> {
   return unloaded;
 }
 
-/** Load the platform default into the pool if it is registered but not resident. */
+/** Load / mark available the platform default. */
 export async function warmPlatformDefaultModel(): Promise<void> {
   if (process.env.LLAMA_WARM_DEFAULT === "false") return;
 
@@ -92,6 +157,21 @@ export async function warmPlatformDefaultModel(): Promise<void> {
     where: { isPlatformDefault: true },
   });
   if (!defaultModel) return;
+
+  if (isRemoteProviderKind(defaultModel.providerKind)) {
+    if (process.env.LLAMA_SINGLE_DEFAULT !== "false") {
+      const evicted = await unloadAllExcept(defaultModel.modelId);
+      if (evicted.length > 0) {
+        console.log(`[engine] evicted non-default local models: ${evicted.join(", ")}`);
+      }
+    }
+    await prisma.hostedModel.update({
+      where: { id: defaultModel.id },
+      data: { status: "LOADED" },
+    });
+    console.log(`[engine] platform default is remote: ${defaultModel.modelId}`);
+    return;
+  }
 
   if (process.env.LLAMA_SINGLE_DEFAULT !== "false") {
     const evicted = await unloadAllExcept(defaultModel.modelId);
@@ -145,6 +225,9 @@ export async function warmPlatformDefaultModel(): Promise<void> {
 }
 
 export function mapEngineFailure(err: unknown): { code: string; message: string } {
+  if (err && typeof err === "object" && "name" in err && err.name === "RemoteEngineError") {
+    return remoteOpenAi.mapRemoteError(err);
+  }
   return isGrpcBackend() ? grpcBackend.mapGrpcError(err) : llamaBackend.mapEngineFailure(err);
 }
 

@@ -5,13 +5,20 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { FasterWhisperProvider } from "./fasterWhisper.js";
 import { NemoAsrProvider } from "./nemoAsr.js";
+import {
+  HfSpaceAsrProvider,
+  probeHfSpaceAvailable,
+  resolveHfSpaceAsrConfig,
+} from "./hfSpaceAsr.js";
 import { isHfRepoCachedOnDisk, isWhisperModelCachedOnDisk } from "./cache.js";
 import {
   getActiveVoiceModelInstall,
+  HF_SPACE_MODEL_CATALOG,
   NEMO_MODEL_CATALOG,
   WHISPER_MODEL_CATALOG,
 } from "./modelJobs.js";
 import { checkPyannoteAvailable } from "./diarize.js";
+import { checkPyannoteCloudAvailable } from "./pyannoteCloud.js";
 import { resolveActiveSttSelection, type SttProviderId } from "./runtimeConfig.js";
 import type { SttProvider, TranscriptArtifact } from "./types.js";
 
@@ -160,13 +167,23 @@ export interface VoiceEnv {
   STT_NEMO_MODEL: string;
   STT_NEMO_DEVICE: "cpu" | "cuda";
   STT_NEMO_SCRIPT: string;
+  STT_HF_SPACE_ID: string;
+  STT_HF_SPACE_URL: string;
+  STT_HF_SPACE_FN_INDEX: number;
+  HF_TOKEN?: string;
   DIARIZATION_ENABLED: boolean;
+  DIARIZATION_BACKEND: "local" | "cloud";
+  DIARIZATION_MODE: "per-turn" | "merge";
   DIARIZATION_PROVIDER: "pyannote";
   DIARIZATION_MODEL: string;
+  DIARIZATION_CLOUD_MODEL: string;
   DIARIZATION_DEVICE: "cpu" | "cuda";
   DIARIZATION_SCRIPT: string;
   DIARIZATION_MIN_SPEAKERS?: number;
   DIARIZATION_MAX_SPEAKERS?: number;
+  DIARIZATION_TURN_PAD_MS?: number;
+  DIARIZATION_ASR_CONCURRENCY?: number;
+  PYANNOTE_API_KEY?: string;
 }
 
 let cachedProvider: SttProvider | null = null;
@@ -180,6 +197,9 @@ function providerKey(env: VoiceEnv): string {
     env.STT_FASTER_WHISPER_COMPUTE_TYPE,
     env.STT_NEMO_MODEL,
     env.STT_NEMO_DEVICE,
+    env.STT_HF_SPACE_ID,
+    env.STT_HF_SPACE_URL,
+    env.STT_HF_SPACE_FN_INDEX,
     env.STT_PYTHON_BIN,
     env.STT_FASTER_WHISPER_SCRIPT,
     env.STT_NEMO_SCRIPT,
@@ -202,6 +222,15 @@ export function createSttProvider(env: VoiceEnv): SttProvider {
       model: env.STT_NEMO_MODEL,
       device: env.STT_NEMO_DEVICE,
     });
+  } else if (env.STT_PROVIDER === "hf-space") {
+    cachedProvider = new HfSpaceAsrProvider(
+      resolveHfSpaceAsrConfig({
+        STT_HF_SPACE_ID: env.STT_HF_SPACE_ID,
+        STT_HF_SPACE_URL: env.STT_HF_SPACE_URL,
+        STT_HF_SPACE_FN_INDEX: env.STT_HF_SPACE_FN_INDEX,
+        HF_TOKEN: env.HF_TOKEN ?? process.env.HF_TOKEN,
+      }),
+    );
   } else {
     cachedProvider = new FasterWhisperProvider({
       pythonBin: env.STT_PYTHON_BIN,
@@ -225,12 +254,20 @@ export async function resolveVoiceEnv(env: VoiceEnv): Promise<VoiceEnv> {
     provider: env.STT_PROVIDER,
     whisperModel: env.STT_FASTER_WHISPER_MODEL,
     nemoModel: env.STT_NEMO_MODEL,
+    hfSpaceModel: env.STT_HF_SPACE_ID,
   });
   if (active.provider === "nemo") {
     return {
       ...env,
       STT_PROVIDER: "nemo",
       STT_NEMO_MODEL: active.model,
+    };
+  }
+  if (active.provider === "hf-space") {
+    return {
+      ...env,
+      STT_PROVIDER: "hf-space",
+      STT_HF_SPACE_ID: active.model,
     };
   }
   return {
@@ -254,6 +291,7 @@ export function ensureWhisperScript(scriptPath: string) {
 }
 
 export function ensureSttScript(env: VoiceEnv) {
+  if (env.STT_PROVIDER === "hf-space") return;
   const script =
     env.STT_PROVIDER === "nemo" ? env.STT_NEMO_SCRIPT : env.STT_FASTER_WHISPER_SCRIPT;
   ensureWhisperScript(script);
@@ -366,14 +404,19 @@ export interface VoiceStatus {
   pythonVersion: string | null;
   fasterWhisperAvailable: boolean;
   nemoAvailable: boolean;
+  hfSpaceAvailable: boolean;
+  hfSpaceUrl: string | null;
   diarization: {
     enabled: boolean;
+    backend: "local" | "cloud";
+    mode: "per-turn" | "merge";
     provider: string;
     model: string;
     device: string;
     available: boolean;
     scriptExists: boolean;
     hfTokenConfigured: boolean;
+    apiKeyConfigured: boolean;
     error?: string;
   };
   ready: boolean;
@@ -382,24 +425,39 @@ export interface VoiceStatus {
 
 export async function probeVoiceStatus(env: VoiceEnv): Promise<VoiceStatus> {
   const resolved = await resolveVoiceEnv(env);
-  const scriptPath = resolveVoicePath(
-    resolved.STT_PROVIDER === "nemo"
-      ? resolved.STT_NEMO_SCRIPT
-      : resolved.STT_FASTER_WHISPER_SCRIPT,
-  );
+  const hfSpaceConfig = resolveHfSpaceAsrConfig({
+    STT_HF_SPACE_ID: resolved.STT_HF_SPACE_ID,
+    STT_HF_SPACE_URL: resolved.STT_HF_SPACE_URL,
+    STT_HF_SPACE_FN_INDEX: resolved.STT_HF_SPACE_FN_INDEX,
+    HF_TOKEN: resolved.HF_TOKEN ?? process.env.HF_TOKEN,
+  });
+  const scriptPath =
+    resolved.STT_PROVIDER === "hf-space"
+      ? hfSpaceConfig.spaceUrl
+      : resolveVoicePath(
+          resolved.STT_PROVIDER === "nemo"
+            ? resolved.STT_NEMO_SCRIPT
+            : resolved.STT_FASTER_WHISPER_SCRIPT,
+        );
   const uploadDir = resolveVoicePath(resolved.VOICE_UPLOAD_DIR);
   const activeModel =
     resolved.STT_PROVIDER === "nemo"
       ? resolved.STT_NEMO_MODEL
-      : resolved.STT_FASTER_WHISPER_MODEL;
+      : resolved.STT_PROVIDER === "hf-space"
+        ? resolved.STT_HF_SPACE_ID
+        : resolved.STT_FASTER_WHISPER_MODEL;
   const envModel =
-    env.STT_PROVIDER === "nemo" ? env.STT_NEMO_MODEL : env.STT_FASTER_WHISPER_MODEL;
+    env.STT_PROVIDER === "nemo"
+      ? env.STT_NEMO_MODEL
+      : env.STT_PROVIDER === "hf-space"
+        ? env.STT_HF_SPACE_ID
+        : env.STT_FASTER_WHISPER_MODEL;
 
   const status: VoiceStatus = {
     enabled: resolved.VOICE_ENABLED,
     provider: resolved.STT_PROVIDER,
     language:
-      resolved.STT_PROVIDER === "nemo"
+      resolved.STT_PROVIDER === "nemo" || resolved.STT_PROVIDER === "hf-space"
         ? "bn"
         : (resolveSttLanguageHint(resolved.STT_LANGUAGE, activeModel) ?? "auto"),
     configuredModel: activeModel,
@@ -408,31 +466,46 @@ export async function probeVoiceStatus(env: VoiceEnv): Promise<VoiceStatus> {
     device:
       resolved.STT_PROVIDER === "nemo"
         ? resolved.STT_NEMO_DEVICE
-        : resolved.STT_FASTER_WHISPER_DEVICE,
+        : resolved.STT_PROVIDER === "hf-space"
+          ? "remote"
+          : resolved.STT_FASTER_WHISPER_DEVICE,
     computeType:
-      resolved.STT_PROVIDER === "nemo" ? "pytorch" : resolved.STT_FASTER_WHISPER_COMPUTE_TYPE,
+      resolved.STT_PROVIDER === "nemo"
+        ? "pytorch"
+        : resolved.STT_PROVIDER === "hf-space"
+          ? "hf-space"
+          : resolved.STT_FASTER_WHISPER_COMPUTE_TYPE,
     modelCached: false,
     models: [],
     providers: [],
     activeInstall: null,
     uploadDir,
     scriptPath,
-    scriptExists: existsSync(scriptPath),
+    scriptExists:
+      resolved.STT_PROVIDER === "hf-space" ? true : existsSync(scriptPath),
     pythonBin: resolved.STT_PYTHON_BIN,
     pythonAvailable: false,
     pythonVersion: null,
     fasterWhisperAvailable: false,
     nemoAvailable: false,
+    hfSpaceAvailable: false,
+    hfSpaceUrl: hfSpaceConfig.spaceUrl,
     diarization: {
       enabled: resolved.DIARIZATION_ENABLED,
+      backend: resolved.DIARIZATION_BACKEND,
+      mode: resolved.DIARIZATION_MODE,
       provider: resolved.DIARIZATION_PROVIDER,
-      model: resolved.DIARIZATION_MODEL,
-      device: resolved.DIARIZATION_DEVICE,
+      model:
+        resolved.DIARIZATION_BACKEND === "cloud"
+          ? resolved.DIARIZATION_CLOUD_MODEL
+          : resolved.DIARIZATION_MODEL,
+      device: resolved.DIARIZATION_BACKEND === "cloud" ? "cloud" : resolved.DIARIZATION_DEVICE,
       available: false,
       scriptExists: existsSync(resolveVoicePath(resolved.DIARIZATION_SCRIPT)),
       hfTokenConfigured: Boolean(
         process.env.HF_TOKEN?.trim() || process.env.HUGGING_FACE_HUB_TOKEN?.trim(),
       ),
+      apiKeyConfigured: Boolean(resolved.PYANNOTE_API_KEY?.trim()),
     },
     ready: false,
   };
@@ -448,31 +521,44 @@ export async function probeVoiceStatus(env: VoiceEnv): Promise<VoiceStatus> {
     };
   }
 
-  try {
-    await execFileAsync(
-      resolved.STT_PYTHON_BIN,
-      ["--version"],
-      { maxBuffer: 1024 * 1024, timeout: 10_000 },
-    ).then(({ stdout: versionOut, stderr: versionErr }) => {
-      status.pythonAvailable = true;
-      status.pythonVersion = (versionOut || versionErr).trim() || "Python available";
-    });
-  } catch (error) {
-    status.error = error instanceof Error ? error.message : "Python unavailable";
-    status.providers = [
-      { id: "faster-whisper", label: "Faster-Whisper", available: false },
-      { id: "nemo", label: "NeMo (Bangla)", available: false },
-    ];
-    return status;
-  }
+  const spaceProbe = await probeHfSpaceAvailable(hfSpaceConfig);
+  status.hfSpaceAvailable = spaceProbe.available;
 
-  const packages = await probeSttPackages(resolved);
-  status.fasterWhisperAvailable = packages.fasterWhisperAvailable;
-  status.nemoAvailable = packages.nemoAvailable;
-  if (packages.executable) status.pythonBin = packages.executable;
-  if (packages.version) status.pythonVersion = `Python ${packages.version}`;
-  if (!packages.nemoAvailable && packages.nemoError && resolved.STT_PROVIDER === "nemo") {
-    status.error = `NeMo check failed (${packages.executable ?? resolved.STT_PYTHON_BIN}): ${packages.nemoError}`;
+  if (resolved.STT_PROVIDER !== "hf-space") {
+    try {
+      await execFileAsync(
+        resolved.STT_PYTHON_BIN,
+        ["--version"],
+        { maxBuffer: 1024 * 1024, timeout: 10_000 },
+      ).then(({ stdout: versionOut, stderr: versionErr }) => {
+        status.pythonAvailable = true;
+        status.pythonVersion = (versionOut || versionErr).trim() || "Python available";
+      });
+    } catch (error) {
+      status.error = error instanceof Error ? error.message : "Python unavailable";
+      status.providers = [
+        { id: "faster-whisper", label: "Faster-Whisper", available: false },
+        { id: "nemo", label: "NeMo (Bangla)", available: false },
+        {
+          id: "hf-space",
+          label: "HF Space (BengaliAI)",
+          available: status.hfSpaceAvailable,
+        },
+      ];
+      return status;
+    }
+
+    const packages = await probeSttPackages(resolved);
+    status.fasterWhisperAvailable = packages.fasterWhisperAvailable;
+    status.nemoAvailable = packages.nemoAvailable;
+    if (packages.executable) status.pythonBin = packages.executable;
+    if (packages.version) status.pythonVersion = `Python ${packages.version}`;
+    if (!packages.nemoAvailable && packages.nemoError && resolved.STT_PROVIDER === "nemo") {
+      status.error = `NeMo check failed (${packages.executable ?? resolved.STT_PYTHON_BIN}): ${packages.nemoError}`;
+    }
+  } else {
+    status.pythonAvailable = true;
+    status.pythonVersion = "n/a (remote Space)";
   }
 
   status.providers = [
@@ -482,10 +568,22 @@ export async function probeVoiceStatus(env: VoiceEnv): Promise<VoiceStatus> {
       available: status.fasterWhisperAvailable,
     },
     { id: "nemo", label: "NeMo (Bangla)", available: status.nemoAvailable },
+    {
+      id: "hf-space",
+      label: "HF Space (BengaliAI)",
+      available: status.hfSpaceAvailable,
+    },
   ];
 
-  if (status.diarization.scriptExists) {
-    if (resolved.DIARIZATION_ENABLED) {
+  if (resolved.DIARIZATION_ENABLED) {
+    if (resolved.DIARIZATION_BACKEND === "cloud") {
+      const cloudProbe = await checkPyannoteCloudAvailable(resolved.PYANNOTE_API_KEY ?? "");
+      status.diarization.available = cloudProbe.available;
+      if (!cloudProbe.available) {
+        status.diarization.error =
+          cloudProbe.error ?? "pyannoteAI cloud unavailable — set PYANNOTE_API_KEY";
+      }
+    } else if (status.diarization.scriptExists) {
       const diarizeProbe = await probePyannoteCached(resolved);
       status.diarization.available = diarizeProbe.available;
       if (!diarizeProbe.available) {
@@ -497,10 +595,10 @@ export async function probeVoiceStatus(env: VoiceEnv): Promise<VoiceStatus> {
           "HF_TOKEN missing — create a Hugging Face token and accept pyannote/speaker-diarization-community-1 terms";
       }
     } else {
-      status.diarization.available = false;
+      status.diarization.error = `Diarization script missing: ${resolved.DIARIZATION_SCRIPT}`;
     }
   } else {
-    status.diarization.error = `Diarization script missing: ${resolved.DIARIZATION_SCRIPT}`;
+    status.diarization.available = false;
   }
 
   if (resolved.STT_PROVIDER === "nemo") {
@@ -513,6 +611,16 @@ export async function probeVoiceStatus(env: VoiceEnv): Promise<VoiceStatus> {
       license: entry.license,
     }));
     status.modelCached = isHfRepoCachedOnDisk(activeModel);
+  } else if (resolved.STT_PROVIDER === "hf-space") {
+    status.models = HF_SPACE_MODEL_CATALOG.map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      approxDownloadGb: entry.approxDownloadGb,
+      cached: status.hfSpaceAvailable,
+      active: entry.id === activeModel,
+      license: entry.license,
+    }));
+    status.modelCached = status.hfSpaceAvailable;
   } else {
     status.models = WHISPER_MODEL_CATALOG.map((entry) => ({
       id: entry.id,
@@ -522,6 +630,18 @@ export async function probeVoiceStatus(env: VoiceEnv): Promise<VoiceStatus> {
       active: entry.id === activeModel,
     }));
     status.modelCached = isWhisperModelCachedOnDisk(activeModel);
+  }
+
+  if (resolved.STT_PROVIDER === "hf-space") {
+    status.ready = status.enabled && status.hfSpaceAvailable && status.modelCached;
+    if (!status.enabled) {
+      // disabled is fine
+    } else if (!status.hfSpaceAvailable) {
+      status.error =
+        spaceProbe.error ??
+        "Hugging Face Space ASR not reachable — wake the Space and refresh Admin → Infra";
+    }
+    return status;
   }
 
   const packageOk =

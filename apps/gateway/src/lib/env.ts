@@ -37,7 +37,7 @@ const envSchema = z.object({
   VOICE_MAX_UPLOAD_MB: z.coerce.number().default(50),
   VOICE_RETENTION_HOURS: z.coerce.number().default(24),
   VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().default(20),
-  STT_PROVIDER: z.enum(["faster-whisper", "nemo"]).default("faster-whisper"),
+  STT_PROVIDER: z.enum(["faster-whisper", "nemo", "hf-space"]).default("faster-whisper"),
   STT_LANGUAGE: z.string().default(""),
   STT_PYTHON_BIN: z.string().default("python3"),
   STT_FASTER_WHISPER_SCRIPT: z
@@ -49,19 +49,32 @@ const envSchema = z.object({
   STT_FASTER_WHISPER_BEAM_SIZE: z.coerce.number().default(5),
   STT_FASTER_WHISPER_BEST_OF: z.coerce.number().default(5),
   STT_FASTER_WHISPER_TEMPERATURE: z.coerce.number().default(0),
-  STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD: z.coerce.number().default(0.6),
+  STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD: z.coerce.number().default(0.35),
   STT_NEMO_SCRIPT: z.string().default("scripts/nemo-asr-transcribe.py"),
   STT_NEMO_MODEL: z
     .string()
     .default("kazalbrur/bangla-stt-conformer-120m-dialects"),
   STT_NEMO_DEVICE: z.enum(["cpu", "cuda"]).default("cpu"),
+  /** Hugging Face Space ASR (remote Gradio), e.g. bengaliAI regional Whisper. */
+  STT_HF_SPACE_ID: z
+    .string()
+    .default("bengaliAI/regional_bengali-asr_tugstugi_whisper-medium"),
+  STT_HF_SPACE_URL: z.string().default(""),
+  STT_HF_SPACE_FN_INDEX: z.coerce.number().default(0),
+  STT_HF_SPACE_TIMEOUT_MS: z.coerce.number().default(600_000),
   DIARIZATION_ENABLED: boolishDefaultFalse,
+  DIARIZATION_BACKEND: z.enum(["local", "cloud"]).optional(),
+  DIARIZATION_MODE: z.enum(["per-turn", "merge"]).default("per-turn"),
   DIARIZATION_PROVIDER: z.enum(["pyannote"]).default("pyannote"),
   DIARIZATION_MODEL: z.string().default("pyannote/speaker-diarization-community-1"),
+  DIARIZATION_CLOUD_MODEL: z.string().default("precision-2"),
   DIARIZATION_DEVICE: z.enum(["cpu", "cuda"]).default("cpu"),
   DIARIZATION_SCRIPT: z.string().default("scripts/pyannote-diarize.py"),
   DIARIZATION_MIN_SPEAKERS: z.coerce.number().optional(),
   DIARIZATION_MAX_SPEAKERS: z.coerce.number().optional(),
+  DIARIZATION_TURN_PAD_MS: z.coerce.number().default(200),
+  DIARIZATION_ASR_CONCURRENCY: z.coerce.number().default(2),
+  PYANNOTE_API_KEY: z.string().optional(),
   HF_TOKEN: z.string().optional(),
 });
 

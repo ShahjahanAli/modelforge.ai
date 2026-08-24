@@ -36,9 +36,22 @@ const DEFAULT_DURATION = 5000;
 
 const ToastContext = createContext<ToastApi | null>(null);
 
+const noopToastApi: ToastApi = {
+  push: () => "",
+  update: () => undefined,
+  dismiss: () => undefined,
+};
+
 export function useToast(): ToastApi {
   const api = useContext(ToastContext);
-  if (!api) throw new Error("useToast must be used inside <ToastProvider>");
+  if (!api) {
+    // Prefer a soft fallback over crashing the page if a route mounts outside
+    // the provider (HMR / partial trees). ShellProviders also wraps admin/customer.
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("useToast used outside <ToastProvider> — toasts will be no-ops");
+    }
+    return noopToastApi;
+  }
   return api;
 }
 

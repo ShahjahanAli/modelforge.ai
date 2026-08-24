@@ -4,7 +4,71 @@ import {
   buildVoiceAnalysisSystemPrompt,
   resolveSttLanguageHint,
 } from "./index.js";
-import { normalizeTranscript, type TranscriptArtifact } from "./types.js";
+import {
+  coalesceTurns,
+  collapseDuplicateAdjacentText,
+  hasDuplicatedTurnText,
+  mergeAsrSegmentsIntoTurns,
+} from "./diarize.js";
+import { resolvePyannoteCloudModel } from "./pyannoteCloud.js";
+import { normalizeTranscript, isHallucinatedTranscriptText, repairSegmentTimestamps, type TranscriptArtifact } from "./types.js";
+
+describe("diarize-first helpers", () => {
+  it("coalesces adjacent same-speaker turns", () => {
+    const turns = coalesceTurns([
+      { start: 0, end: 1.0, speaker: "SPEAKER_00" },
+      { start: 1.2, end: 2.0, speaker: "SPEAKER_00" },
+      { start: 2.5, end: 3.0, speaker: "SPEAKER_01" },
+    ]);
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toMatchObject({ start: 0, end: 2.0, speaker: "SPEAKER_00" });
+    expect(turns[1]?.speaker).toBe("SPEAKER_01");
+  });
+
+  it("merges ASR text into diarization turns without duplicating whole spans", () => {
+    const merged = mergeAsrSegmentsIntoTurns(
+      [
+        { startSec: 0, endSec: 4, text: "hello there how are you today", speaker: null },
+      ],
+      [
+        { start: 0, end: 2, speaker: "SPEAKER_00" },
+        { start: 2, end: 4, speaker: "SPEAKER_01" },
+      ],
+    );
+    expect(merged).toHaveLength(2);
+    expect(merged[0]?.speaker).toBe("SPEAKER_00");
+    expect(merged[1]?.speaker).toBe("SPEAKER_01");
+    expect(merged[0]?.text).not.toEqual(merged[1]?.text);
+  });
+
+  it("detects duplicated turn text", () => {
+    expect(
+      hasDuplicatedTurnText([
+        { startSec: 0, endSec: 1, text: "same long phrase repeated here again", speaker: "A" },
+        { startSec: 1, endSec: 2, text: "same long phrase repeated here again", speaker: "B" },
+        { startSec: 2, endSec: 3, text: "same long phrase repeated here again", speaker: "A" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("collapses adjacent duplicate bubbles", () => {
+    const out = collapseDuplicateAdjacentText([
+      { startSec: 0, endSec: 1, text: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", speaker: "A" },
+      { startSec: 1, endSec: 2, text: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", speaker: "A" },
+      { startSec: 2, endSec: 3, text: "different text here", speaker: "B" },
+    ]);
+    expect(out).toHaveLength(2);
+    expect(out[0]?.endSec).toBe(2);
+  });
+
+  it("maps HF-style cloud model ids to API model names", () => {
+    expect(resolvePyannoteCloudModel("precision-2")).toBe("precision-2");
+    expect(resolvePyannoteCloudModel("pyannote/speaker-diarization-precision-2")).toBe(
+      "precision-2",
+    );
+    expect(resolvePyannoteCloudModel("community-1")).toBe("community-1");
+  });
+});
 
 describe("voice transcript helpers", () => {
   it("normalizes transcript whitespace and drops empty segments", () => {
@@ -183,4 +247,67 @@ describe("diarization helpers", () => {
     expect(collapsed).toHaveLength(2);
     expect(collapsed[0]?.endSec).toBe(3);
   });
+
+  it("keeps opening segments and conversational না না bursts", () => {
+    expect(isHallucinatedTranscriptText("ালো খাই", 0.5)).toBe(false);
+    expect(isHallucinatedTranscriptText("না না না না কথাটা বলছেন নাই", 12)).toBe(false);
+    expect(isHallucinatedTranscriptText("হ্যাঁ হ্যাঁ বুঝতে পারছে", 40)).toBe(false);
+    expect(isHallucinatedTranscriptText("হ্যাঁ হ্যাঁ বুঝতে পারছে", 30, 51)).toBe(false);
+    expect(
+      isHallucinatedTranscriptText("তুই কি নাম্বার� ভুল নামি সেভ করছোস", 0, 0.48),
+    ).toBe(false);
+  });
+
+  it("falls back when strict filter would drop every segment", () => {
+    const noisy = "x".repeat(400);
+    const artifact = normalizeTranscript({
+      language: "bn",
+      text: noisy,
+      confidence: null,
+      provider: "faster-whisper",
+      model: "test",
+      segments: [{ startSec: 40, endSec: 50, text: noisy, speaker: null }],
+    });
+    expect(artifact.text.length).toBeGreaterThan(0);
+  });
+
+  it("expands collapsed Whisper timestamps across the gap to the next segment", () => {
+    const repaired = repairSegmentTimestamps(
+      [
+        { startSec: 0, endSec: 0.48, text: "a".repeat(120), speaker: null },
+        { startSec: 30, endSec: 51.2, text: "second half", speaker: null },
+      ],
+      51.2,
+    );
+    expect(repaired[0]?.endSec).toBe(30);
+    expect(repaired[1]?.startSec).toBe(30);
+  });
+});
+
+describe("faster-whisper integration", () => {
+  it.skipIf(!process.env.STT_INTEGRATION)("keeps Arnob opening through gateway STT provider", async () => {
+    const { FasterWhisperProvider } = await import("./fasterWhisper.js");
+    const { resolveVoicePath } = await import("./index.js");
+    const audio = resolveVoicePath(
+      "data/audio/1787493309908-e3e8b5ec-e61a-44d7-ba9b-5e76695a3265-1787493309253-9c2da14a-5a8e-495f-b4b8-8342a6b1207d-Arnob_Call_Record_20260823_trim_0-51200ms.wav",
+    );
+    const script = resolveVoicePath(
+      process.env.STT_FASTER_WHISPER_SCRIPT ?? "scripts/faster-whisper-transcribe.py",
+    );
+    const provider = new FasterWhisperProvider({
+      pythonBin: process.env.STT_PYTHON_BIN ?? "python3",
+      scriptPath: script,
+      model: "bengaliAI/tugstugi_bengaliai-regional-asr_whisper-medium",
+      device: "cpu",
+      computeType: "int8",
+      beamSize: 5,
+      bestOf: 5,
+      temperature: 0,
+      noSpeechThreshold: 0.35,
+    });
+    const result = await provider.transcribe(audio, { language: "bn" });
+    expect(result.text.length).toBeGreaterThan(900);
+    expect(result.text).toMatch(/শুনতে পাচ্ছ|হ্যা/);
+    expect(result.segments[0]?.startSec ?? 0).toBeLessThan(1);
+  }, 180_000);
 });

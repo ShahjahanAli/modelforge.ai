@@ -441,10 +441,16 @@ interface UpstreamResponse {
  * Reasoning models spend their token budget inside a thought block that
  * llama.cpp reports separately as `reasoning_content`. If generation is cut off
  * before the block closes, `content` is empty even though tokens were billed,
- * so fall back to the reasoning text rather than returning nothing.
+ * so fall back to the reasoning text rather than returning nothing — except in
+ * JSON mode, where reasoning must not be mistaken for the structured payload.
  */
-function partText(part: UpstreamPart | undefined): string {
-  return part?.content?.length ? part.content : (part?.reasoning_content ?? "");
+function partText(
+  part: UpstreamPart | undefined,
+  opts?: { preferContentOnly?: boolean },
+): string {
+  const content = part?.content ?? "";
+  if (opts?.preferContentOnly) return content;
+  return content.length ? content : (part?.reasoning_content ?? "");
 }
 
 export function generateStream(
@@ -456,6 +462,7 @@ export function generateStream(
     top_p: number;
     stop_sequences: string[];
     stream: boolean;
+    response_format?: { type: "text" | "json_object" };
   },
   _url?: string,
   options?: { signal?: AbortSignal; deadlineMs?: number },
@@ -471,6 +478,7 @@ export function generateStream(
       const signal = options?.signal
         ? AbortSignal.any([options.signal, timeout])
         : timeout;
+      const jsonMode = req.response_format?.type === "json_object";
 
       const payload = {
         model: req.model_id,
@@ -481,6 +489,7 @@ export function generateStream(
         ...(req.stop_sequences.length > 0 ? { stop: req.stop_sequences } : {}),
         stream: req.stream,
         ...(req.stream ? { stream_options: { include_usage: true } } : {}),
+        ...(req.response_format ? { response_format: req.response_format } : {}),
       };
 
       try {
@@ -505,7 +514,7 @@ export function generateStream(
           instance.generatedTokens += completionTokens;
           instance.generationMs += Date.now() - startedAt;
           yield {
-            delta: partText(body.choices?.[0]?.message),
+            delta: partText(body.choices?.[0]?.message, { preferContentOnly: jsonMode }),
             is_final: true,
             prompt_tokens: promptTokens,
             completion_tokens: completionTokens,
@@ -545,7 +554,7 @@ export function generateStream(
             const choice = parsed.choices?.[0];
             if (choice?.finish_reason) finishReason = choice.finish_reason;
 
-            const delta = partText(choice?.delta);
+            const delta = partText(choice?.delta, { preferContentOnly: jsonMode });
             if (delta) {
               yield {
                 delta,

@@ -28,13 +28,13 @@ export async function resolveAnusandhanPlatformDefault(): Promise<HostedModel> {
 }
 
 /**
- * Evict every other resident GGUF and warm the platform default before Anusandhan LLM work.
- * Prevents BanglaLLM / cheapest-auto models from staying loaded for this client.
+ * Evict other resident local GGUFs and ensure the platform default is ready
+ * (local warm-load or remote mark-available).
  */
 export async function prepareAnusandhanLlmPool(): Promise<HostedModel> {
   const hosted = await resolveAnusandhanPlatformDefault();
 
-  if (process.env.LLAMA_SINGLE_DEFAULT !== "false") {
+  if (process.env.LLAMA_SINGLE_DEFAULT !== "false" && hosted.providerKind === "LOCAL_GGUF") {
     const evicted = await unloadAllExcept(hosted.modelId);
     if (evicted.length > 0) {
       console.log(
@@ -45,6 +45,24 @@ export async function prepareAnusandhanLlmPool(): Promise<HostedModel> {
         }),
       );
     }
+  }
+
+  if (hosted.providerKind === "OPENAI_COMPAT") {
+    if (hosted.status !== "LOADED") {
+      await prisma.hostedModel.update({
+        where: { id: hosted.id },
+        data: { status: "LOADED" },
+      });
+    }
+    console.log(
+      JSON.stringify({
+        event: "anusandhan.pool.remote",
+        model: hosted.modelId,
+        remoteModelId: hosted.remoteModelId,
+        baseUrl: hosted.remoteBaseUrl,
+      }),
+    );
+    return hosted;
   }
 
   const resident = await listLoadedModels();

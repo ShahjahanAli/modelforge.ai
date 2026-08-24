@@ -100,6 +100,7 @@ export function generateStream(
     top_p: number;
     stop_sequences: string[];
     stream: boolean;
+    response_format?: { type: "text" | "json_object" };
   },
   url?: string,
   options?: { signal?: AbortSignal; deadlineMs?: number },

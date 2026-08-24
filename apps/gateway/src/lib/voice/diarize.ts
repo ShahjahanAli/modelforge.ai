@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { SttProvider, TranscriptArtifact, TranscriptSegment } from "./types.js";
 import { normalizeTranscript } from "./types.js";
+import { runPyannoteCloudDiarization } from "./pyannoteCloud.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,12 +26,23 @@ export interface DiarizationTurn {
 
 export interface DiarizationConfig {
   enabled: boolean;
+  /** local = pyannote.audio script; cloud = pyannoteAI API (Precision-2). */
+  backend: "local" | "cloud";
+  /** Primary strategy: diarize first, ASR each turn (recommended). */
+  mode: "per-turn" | "merge";
   pythonBin: string;
   scriptPath: string;
+  /** Local HF model id, or cloud model alias (precision-2 / community-1). */
   model: string;
   device: "cpu" | "cuda";
   minSpeakers?: number;
   maxSpeakers?: number;
+  /** pyannoteAI API key (cloud backend). */
+  apiKey?: string;
+  /** Expand each turn before ffmpeg cut (ms). */
+  turnPadMs?: number;
+  /** Parallel per-turn ASR jobs. */
+  asrConcurrency?: number;
 }
 
 function parseJsonLine(stdout: string, stderr: string): Record<string, unknown> {
@@ -71,6 +83,16 @@ export async function runDiarization(
   audioPath: string,
   config: DiarizationConfig,
 ): Promise<DiarizationTurn[]> {
+  if (config.backend === "cloud") {
+    return runPyannoteCloudDiarization({
+      audioPath,
+      apiKey: config.apiKey ?? "",
+      model: config.model,
+      minSpeakers: config.minSpeakers,
+      maxSpeakers: config.maxSpeakers,
+    });
+  }
+
   const scriptPath = resolveScriptPath(config.scriptPath);
   const args = [
     scriptPath,
@@ -266,10 +288,6 @@ export function hasDuplicatedTurnText(segments: TranscriptSegment[], minDupes = 
   return false;
 }
 
-function countSpeakers(segments: TranscriptSegment[]): number {
-  return new Set(segments.map((segment) => segment.speaker).filter(Boolean)).size;
-}
-
 async function cutTurnWav(
   sourcePath: string,
   startSec: number,
@@ -299,50 +317,82 @@ async function cutTurnWav(
   );
 }
 
-/** Last resort: ASR each diarization clip when overlap merge cannot split speakers. */
+/** Diarize-first: ASR each diarization clip (padded), then combine chronologically. */
 async function transcribePerTurn(input: {
   audioPath: string;
   stt: SttProvider;
   turns: DiarizationTurn[];
   language?: string;
-  initialPrompt?: string;
-}): Promise<TranscriptSegment[]> {
+  turnPadMs?: number;
+  concurrency?: number;
+}): Promise<{ segments: TranscriptSegment[]; model: string; language: string }> {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "mf-diarize-"));
-  const segments: TranscriptSegment[] = [];
+  const padSec = Math.max(0, (input.turnPadMs ?? 200) / 1000);
+  const concurrency = Math.max(1, Math.min(8, input.concurrency ?? 2));
+  const eligible = input.turns
+    .map((turn, index) => ({ turn, index }))
+    .filter(({ turn }) => turn.end - turn.start >= 0.35);
+
+  const results: Array<TranscriptSegment | null> = new Array(eligible.length).fill(null);
+  let model = "unknown";
+  let language = input.language ?? "unknown";
 
   try {
-    for (let i = 0; i < input.turns.length; i += 1) {
-      const turn = input.turns[i]!;
-      if (turn.end - turn.start < 0.35) continue;
-      const clipPath = path.join(tmpDir, `turn-${String(i).padStart(4, "0")}.wav`);
-      try {
-        await cutTurnWav(input.audioPath, turn.start, turn.end, clipPath);
-      } catch (error) {
-        console.warn(
-          `[voice.diarize] ffmpeg cut failed for turn ${i}:`,
-          error instanceof Error ? error.message : error,
-        );
-        continue;
+    let next = 0;
+    async function worker() {
+      while (next < eligible.length) {
+        const slot = next;
+        next += 1;
+        const item = eligible[slot]!;
+        const turn = item.turn;
+        const cutStart = Math.max(0, turn.start - padSec);
+        const cutEnd = turn.end + padSec;
+        const clipPath = path.join(tmpDir, `turn-${String(item.index).padStart(4, "0")}.wav`);
+        try {
+          await cutTurnWav(input.audioPath, cutStart, cutEnd, clipPath);
+        } catch (error) {
+          console.warn(
+            `[voice.diarize] ffmpeg cut failed for turn ${item.index}:`,
+            error instanceof Error ? error.message : error,
+          );
+          continue;
+        }
+        try {
+          // Do NOT pass initialPrompt into tiny clips — it gets regurgitated as the whole turn.
+          const partial = await input.stt.transcribe(clipPath, {
+            language: input.language,
+            conditionOnPreviousText: false,
+          });
+          model = partial.model || model;
+          language = partial.language || language;
+          const text = partial.text.trim();
+          if (!text) continue;
+          results[slot] = {
+            startSec: turn.start,
+            endSec: turn.end,
+            text,
+            speaker: turn.speaker,
+            confidence: partial.confidence ?? undefined,
+          };
+        } catch (error) {
+          console.warn(
+            `[voice.diarize] per-turn ASR failed for turn ${item.index}:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
       }
-      const partial = await input.stt.transcribe(clipPath, {
-        language: input.language,
-        initialPrompt: input.initialPrompt,
-      });
-      const text = partial.text.trim();
-      if (!text) continue;
-      segments.push({
-        startSec: turn.start,
-        endSec: turn.end,
-        text,
-        speaker: turn.speaker,
-        confidence: partial.confidence ?? undefined,
-      });
     }
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, eligible.length) }, () => worker()));
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  return segments;
+  const segments = results
+    .filter((segment): segment is TranscriptSegment => Boolean(segment))
+    .sort((a, b) => a.startSec - b.startSec);
+
+  return { segments, model, language };
 }
 
 /** Merge adjacent same-speaker turns separated by tiny gaps. */
@@ -362,9 +412,18 @@ export function coalesceTurns(turns: DiarizationTurn[], gapSec = 0.35): Diarizat
   return out;
 }
 
+function diarizeProviderTag(config: DiarizationConfig): string {
+  if (config.backend === "cloud") {
+    return config.model.toLowerCase().includes("community")
+      ? "pyannoteAI-community-1"
+      : "pyannoteAI-precision-2";
+  }
+  return "pyannote-local";
+}
+
 /**
- * Full-file ASR + pyannote diarization aligned by timestamp overlap.
- * Falls back to plain ASR when diarization is disabled or yields no turns.
+ * Diarize first (local pyannote or pyannoteAI cloud), then ASR each turn and combine.
+ * Falls back to full-file ASR + turn merge when per-turn ASR yields nothing.
  */
 export async function transcribeWithDiarization(input: {
   audioPath: string;
@@ -373,13 +432,11 @@ export async function transcribeWithDiarization(input: {
   language?: string;
   initialPrompt?: string;
 }): Promise<TranscriptArtifact> {
-  const plain = await input.stt.transcribe(input.audioPath, {
-    language: input.language,
-    initialPrompt: input.initialPrompt,
-  });
-
   if (!input.diarization.enabled) {
-    return plain;
+    return input.stt.transcribe(input.audioPath, {
+      language: input.language,
+      initialPrompt: input.initialPrompt,
+    });
   }
 
   let rawTurns: DiarizationTurn[];
@@ -387,9 +444,13 @@ export async function transcribeWithDiarization(input: {
     rawTurns = await runDiarization(input.audioPath, input.diarization);
   } catch (error) {
     console.warn(
-      "[voice.diarize] failed — returning ASR without speaker labels:",
+      "[voice.diarize] failed — falling back to full-file ASR without speaker labels:",
       error instanceof Error ? error.message : error,
     );
+    const plain = await input.stt.transcribe(input.audioPath, {
+      language: input.language,
+      initialPrompt: input.initialPrompt,
+    });
     return {
       ...plain,
       provider: `${plain.provider}+diarize-failed`,
@@ -398,18 +459,65 @@ export async function transcribeWithDiarization(input: {
 
   const turns = coalesceTurns(rawTurns);
   if (turns.length === 0) {
+    const plain = await input.stt.transcribe(input.audioPath, {
+      language: input.language,
+      initialPrompt: input.initialPrompt,
+    });
     return {
       ...plain,
       provider: `${plain.provider}+diarize-empty`,
     };
   }
 
-  let labeledSegments = mergeAsrSegmentsIntoTurns(plain.segments, turns);
-  if (labeledSegments.length === 0) {
-    labeledSegments = assignSpeakersToSegments(plain.segments, turns);
+  const mode = input.diarization.mode ?? "per-turn";
+  const tag = diarizeProviderTag(input.diarization);
+  let labeledSegments: TranscriptSegment[] = [];
+  let strategy: "per-turn-asr" | "turn-merge" | "assign-overlap" = "per-turn-asr";
+  let sttModel = "unknown";
+  let language = input.language ?? "unknown";
+  let confidence: number | null = null;
+
+  if (mode === "per-turn") {
+    const perTurn = await transcribePerTurn({
+      audioPath: input.audioPath,
+      stt: input.stt,
+      turns,
+      language: input.language,
+      turnPadMs: input.diarization.turnPadMs,
+      concurrency: input.diarization.asrConcurrency,
+    });
+    if (perTurn.segments.length > 0 && !hasDuplicatedTurnText(perTurn.segments)) {
+      labeledSegments = collapseDuplicateAdjacentText(perTurn.segments);
+      sttModel = perTurn.model;
+      language = perTurn.language;
+      strategy = "per-turn-asr";
+    } else if (perTurn.segments.length > 0) {
+      // Prefer chronological per-turn even if some duplication — still better for chat UI.
+      labeledSegments = collapseDuplicateAdjacentText(perTurn.segments);
+      sttModel = perTurn.model;
+      language = perTurn.language;
+      strategy = "per-turn-asr";
+    }
   }
 
-  let speakerIds = [
+  if (labeledSegments.length === 0) {
+    const plain = await input.stt.transcribe(input.audioPath, {
+      language: input.language,
+      initialPrompt: input.initialPrompt,
+    });
+    sttModel = plain.model;
+    language = plain.language;
+    confidence = plain.confidence;
+    labeledSegments = mergeAsrSegmentsIntoTurns(plain.segments, turns);
+    strategy = "turn-merge";
+    if (labeledSegments.length === 0) {
+      labeledSegments = assignSpeakersToSegments(plain.segments, turns);
+      strategy = "assign-overlap";
+    }
+    labeledSegments = collapseDuplicateAdjacentText(labeledSegments);
+  }
+
+  const speakerIds = [
     ...new Set(
       labeledSegments
         .map((segment) => segment.speaker)
@@ -417,75 +525,26 @@ export async function transcribeWithDiarization(input: {
     ),
   ];
 
-  const duplicatedText = hasDuplicatedTurnText(labeledSegments);
-  const needsPerTurnAsr =
-    turns.length >= 2 &&
-    (plain.segments.length <= 1 ||
-      labeledSegments.length <= 1 ||
-      countSpeakers(labeledSegments) < 2 ||
-      duplicatedText);
-
-  if (needsPerTurnAsr) {
-    // Do NOT pass initialPrompt into tiny clips — it gets regurgitated as the whole turn text.
-    const perTurn = await transcribePerTurn({
-      audioPath: input.audioPath,
-      stt: input.stt,
-      turns,
-      language: input.language,
-    });
-    const perTurnDuped = hasDuplicatedTurnText(perTurn);
-    if (perTurn.length > 0 && !perTurnDuped) {
-      labeledSegments = perTurn;
-      speakerIds = [
-        ...new Set(
-          labeledSegments
-            .map((segment) => segment.speaker)
-            .filter((speaker): speaker is string => Boolean(speaker)),
-        ),
-      ];
-    } else if (duplicatedText) {
-      // Prefer time-sliced full-file ASR over identical per-turn hallucinations.
-      labeledSegments = mergeAsrSegmentsIntoTurns(plain.segments, turns);
-      speakerIds = [
-        ...new Set(
-          labeledSegments
-            .map((segment) => segment.speaker)
-            .filter((speaker): speaker is string => Boolean(speaker)),
-        ),
-      ];
-    } else if (perTurn.length > 0) {
-      labeledSegments = perTurn;
-      speakerIds = [
-        ...new Set(
-          labeledSegments
-            .map((segment) => segment.speaker)
-            .filter((speaker): speaker is string => Boolean(speaker)),
-        ),
-      ];
-    }
-  }
-
-  // Final safety: collapse consecutive identical texts into one bubble.
-  labeledSegments = collapseDuplicateAdjacentText(labeledSegments);
-
   console.log(
     JSON.stringify({
       event: "voice.diarize.aligned",
+      backend: input.diarization.backend,
+      mode,
+      strategy,
       turnCount: turns.length,
-      asrSegmentCount: plain.segments.length,
       segmentCount: labeledSegments.length,
       speakerCount: speakerIds.length,
       speakers: speakerIds,
-      duplicatedText,
-      strategy: needsPerTurnAsr ? "per-turn-asr" : "turn-merge",
     }),
   );
 
   return normalizeTranscript({
-    ...plain,
-    text: labeledSegments.map((segment) => segment.text).join(" ") || plain.text,
+    language,
+    text: labeledSegments.map((segment) => segment.text).join(" "),
+    confidence,
+    model: sttModel,
     segments: labeledSegments,
-    provider: `${plain.provider}+pyannote`,
+    provider: `${input.stt.name}+${tag}`,
   });
 }
 

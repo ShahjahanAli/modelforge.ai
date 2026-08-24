@@ -55,6 +55,10 @@ import {
   resolveVoicePath,
 } from "../lib/voice/index.js";
 import { toPublicTranscript, transcribeWithDiarization } from "../lib/voice/diarize.js";
+import {
+  diarizationConfigFromEnv,
+  diarizationVoiceEnvFields,
+} from "../lib/voice/diarizationConfig.js";
 
 export const v1Router = Router();
 const voiceWindow = new Map<string, { count: number; resetAt: number }>();
@@ -172,9 +176,19 @@ v1Router.post(
         "audio/mp3",
         "audio/mp4",
         "audio/x-m4a",
+        "audio/m4a",
+        "audio/aac",
+        "audio/x-aac",
         "audio/ogg",
+        "application/octet-stream",
       ]);
-      if (mimeType && !allowed.has(mimeType)) {
+      const fileNameHint = String(req.header("x-audio-filename") ?? "").toLowerCase();
+      const aacByName = /\.(aac|m4a)$/i.test(fileNameHint);
+      if (
+        mimeType &&
+        !allowed.has(mimeType.split(";")[0]!.trim().toLowerCase()) &&
+        !(aacByName && mimeType.includes("octet-stream"))
+      ) {
         return res.status(415).json({
           error: { type: "unsupported_media_type", message: `Unsupported audio type: ${mimeType}` },
         });
@@ -222,7 +236,12 @@ v1Router.post(
         VOICE_MAX_UPLOAD_MB: maxUploadMb,
         VOICE_RETENTION_HOURS: Number(process.env.VOICE_RETENTION_HOURS ?? 24),
         VOICE_RATE_LIMIT_PER_HOUR: rate,
-        STT_PROVIDER: process.env.STT_PROVIDER === "nemo" ? "nemo" : "faster-whisper",
+        STT_PROVIDER:
+          process.env.STT_PROVIDER === "nemo"
+            ? "nemo"
+            : process.env.STT_PROVIDER === "hf-space"
+              ? "hf-space"
+              : "faster-whisper",
         STT_LANGUAGE: process.env.STT_LANGUAGE ?? "",
         STT_FASTER_WHISPER_MODEL: process.env.STT_FASTER_WHISPER_MODEL ?? "small",
         STT_FASTER_WHISPER_DEVICE:
@@ -232,7 +251,7 @@ v1Router.post(
         STT_FASTER_WHISPER_BEST_OF: Number(process.env.STT_FASTER_WHISPER_BEST_OF ?? 5),
         STT_FASTER_WHISPER_TEMPERATURE: Number(process.env.STT_FASTER_WHISPER_TEMPERATURE ?? 0),
         STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD: Number(
-          process.env.STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD ?? 0.6,
+          process.env.STT_FASTER_WHISPER_NO_SPEECH_THRESHOLD ?? 0.35,
         ),
         STT_PYTHON_BIN: process.env.STT_PYTHON_BIN ?? "python3",
         STT_FASTER_WHISPER_SCRIPT: whisperScript,
@@ -240,25 +259,20 @@ v1Router.post(
           process.env.STT_NEMO_MODEL ?? "kazalbrur/bangla-stt-conformer-120m-dialects",
         STT_NEMO_DEVICE: process.env.STT_NEMO_DEVICE === "cuda" ? "cuda" : "cpu",
         STT_NEMO_SCRIPT: nemoScript,
-        DIARIZATION_ENABLED: process.env.DIARIZATION_ENABLED === "true",
-        DIARIZATION_PROVIDER: "pyannote",
-        DIARIZATION_MODEL:
-          process.env.DIARIZATION_MODEL ?? "pyannote/speaker-diarization-community-1",
-        DIARIZATION_DEVICE: process.env.DIARIZATION_DEVICE === "cuda" ? "cuda" : "cpu",
-        DIARIZATION_SCRIPT:
-          process.env.DIARIZATION_SCRIPT ?? "scripts/pyannote-diarize.py",
-        DIARIZATION_MIN_SPEAKERS: process.env.DIARIZATION_MIN_SPEAKERS
-          ? Number(process.env.DIARIZATION_MIN_SPEAKERS)
-          : undefined,
-        DIARIZATION_MAX_SPEAKERS: process.env.DIARIZATION_MAX_SPEAKERS
-          ? Number(process.env.DIARIZATION_MAX_SPEAKERS)
-          : undefined,
+        STT_HF_SPACE_ID:
+          process.env.STT_HF_SPACE_ID ?? "bengaliAI/regional_bengali-asr_tugstugi_whisper-medium",
+        STT_HF_SPACE_URL: process.env.STT_HF_SPACE_URL ?? "",
+        STT_HF_SPACE_FN_INDEX: Number(process.env.STT_HF_SPACE_FN_INDEX ?? 0),
+        HF_TOKEN: process.env.HF_TOKEN ?? process.env.HUGGING_FACE_HUB_TOKEN ?? "",
+        ...diarizationVoiceEnvFields(),
       });
       ensureSttScript(voiceEnv);
       const activeSttModel =
         voiceEnv.STT_PROVIDER === "nemo"
           ? voiceEnv.STT_NEMO_MODEL
-          : voiceEnv.STT_FASTER_WHISPER_MODEL;
+          : voiceEnv.STT_PROVIDER === "hf-space"
+            ? voiceEnv.STT_HF_SPACE_ID
+            : voiceEnv.STT_FASTER_WHISPER_MODEL;
       const sttLanguageHint = resolveSttLanguageHint(process.env.STT_LANGUAGE, activeSttModel);
       const stt = createSttProvider(voiceEnv);
 
@@ -266,15 +280,7 @@ v1Router.post(
         audioPath: storedPath,
         stt,
         language: sttLanguageHint,
-        diarization: {
-          enabled: voiceEnv.DIARIZATION_ENABLED,
-          pythonBin: voiceEnv.STT_PYTHON_BIN,
-          scriptPath: voiceEnv.DIARIZATION_SCRIPT,
-          model: voiceEnv.DIARIZATION_MODEL,
-          device: voiceEnv.DIARIZATION_DEVICE,
-          minSpeakers: voiceEnv.DIARIZATION_MIN_SPEAKERS,
-          maxSpeakers: voiceEnv.DIARIZATION_MAX_SPEAKERS,
-        },
+        diarization: diarizationConfigFromEnv(),
       });
       const publicTranscript = toPublicTranscript(transcript);
       const transcribeMs = Date.now() - transcribeStarted;
@@ -324,7 +330,11 @@ v1Router.post(
       );
 
       if (voiceEnv.DIARIZATION_ENABLED) {
-        const diarizeSlug = `diarize:${voiceEnv.DIARIZATION_MODEL}`;
+        const diarizeModel =
+          voiceEnv.DIARIZATION_BACKEND === "cloud"
+            ? voiceEnv.DIARIZATION_CLOUD_MODEL
+            : voiceEnv.DIARIZATION_MODEL;
+        const diarizeSlug = `diarize:${diarizeModel}`;
         const diarizeUnits = Math.max(1, Math.ceil(durationSec * 5));
         const diarizeExecution = await createInferenceRequest({
           customerId: req.auth!.customerId,
@@ -333,7 +343,8 @@ v1Router.post(
           stream: false,
         });
         await startAttempt(diarizeExecution.id, {
-          backend: "pyannote",
+          backend:
+            voiceEnv.DIARIZATION_BACKEND === "cloud" ? "pyannoteAI" : "pyannote",
           modelSlug: diarizeSlug,
           attemptNo: 1,
         });
@@ -751,6 +762,7 @@ v1Router.post(
           top_p: body.top_p,
           stop_sequences: body.stop,
           stream: body.stream,
+          response_format: body.response_format,
         },
         undefined,
         {

@@ -1,5 +1,5 @@
 {
-  "provider": "nemo",
-  "model": "kazalbrur/bangla-stt-conformer-120m-dialects",
-  "updatedAt": "2026-08-22T23:44:39.964Z"
+  "provider": "hf-space",
+  "model": "bengaliAI/regional_bengali-asr_tugstugi_whisper-medium",
+  "updatedAt": "2026-08-23T18:08:16.288Z"
 }

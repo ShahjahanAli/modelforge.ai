@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { AppShell } from "@/components/shell/AppShell";
+import { ShellProviders } from "@/components/shell/ShellProviders";
 import type { NavGroup } from "@/components/shell/SidebarNav";
 import { ChatWidget } from "@/components/chat/ChatWidget";
 import { ChatSession } from "@/components/chat/ChatSession";
@@ -73,15 +74,17 @@ export default async function CustomerLayout({ children }: { children: React.Rea
   const autoRouteLabel = defaultLabel ? `Auto → ${defaultLabel}` : "Auto route";
 
   return (
-    <ChatSession knowledgeBases={knowledgeBases}>
-      <AppShell
-        groups={groups}
-        email={session.user.email ?? "unknown"}
-        role={role}
-        overlay={role !== "ADMIN" ? <ChatWidget models={chatModels} autoRouteLabel={autoRouteLabel} /> : null}
-      >
-        {children}
-      </AppShell>
-    </ChatSession>
+    <ShellProviders>
+      <ChatSession knowledgeBases={knowledgeBases}>
+        <AppShell
+          groups={groups}
+          email={session.user.email ?? "unknown"}
+          role={role}
+          overlay={role !== "ADMIN" ? <ChatWidget models={chatModels} autoRouteLabel={autoRouteLabel} /> : null}
+        >
+          {children}
+        </AppShell>
+      </ChatSession>
+    </ShellProviders>
   );
 }

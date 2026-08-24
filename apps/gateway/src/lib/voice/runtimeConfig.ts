@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_HF_SPACE_ID } from "./hfSpaceAsr.js";
 
-export type SttProviderId = "faster-whisper" | "nemo";
+export type SttProviderId = "faster-whisper" | "nemo" | "hf-space";
 
 export interface VoiceRuntimeConfig {
   provider: SttProviderId;
@@ -20,7 +21,7 @@ export function voiceRuntimeConfigPath(): string {
 }
 
 function asProvider(value: unknown): SttProviderId | null {
-  if (value === "faster-whisper" || value === "nemo") return value;
+  if (value === "faster-whisper" || value === "nemo" || value === "hf-space") return value;
   return null;
 }
 
@@ -67,6 +68,7 @@ export async function resolveActiveSttSelection(defaults: {
   provider: SttProviderId;
   whisperModel: string;
   nemoModel: string;
+  hfSpaceModel?: string;
 }): Promise<{ provider: SttProviderId; model: string }> {
   const runtime = await readVoiceRuntimeConfig();
   if (runtime?.model) {
@@ -74,6 +76,12 @@ export async function resolveActiveSttSelection(defaults: {
   }
   if (defaults.provider === "nemo") {
     return { provider: "nemo", model: defaults.nemoModel.trim() || defaults.whisperModel };
+  }
+  if (defaults.provider === "hf-space") {
+    return {
+      provider: "hf-space",
+      model: defaults.hfSpaceModel?.trim() || DEFAULT_HF_SPACE_ID,
+    };
   }
   return {
     provider: "faster-whisper",

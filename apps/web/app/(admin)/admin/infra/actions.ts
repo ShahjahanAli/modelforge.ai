@@ -121,7 +121,7 @@ export interface VoiceModelActionResult {
 
 export async function installWhisperModelAction(input: {
   model: string;
-  provider?: "faster-whisper" | "nemo";
+  provider?: "faster-whisper" | "nemo" | "hf-space";
   activateOnSuccess?: boolean;
 }): Promise<VoiceModelActionResult> {
   const admin = await requireAdmin();
@@ -156,7 +156,7 @@ export async function installWhisperModelAction(input: {
 
 export async function activateWhisperModelAction(input: {
   model: string;
-  provider?: "faster-whisper" | "nemo";
+  provider?: "faster-whisper" | "nemo" | "hf-space";
 }): Promise<VoiceModelActionResult> {
   const admin = await requireAdmin();
   const model = input.model;

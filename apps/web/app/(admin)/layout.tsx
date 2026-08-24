@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { AppShell } from "@/components/shell/AppShell";
+import { ShellProviders } from "@/components/shell/ShellProviders";
 import type { NavGroup } from "@/components/shell/SidebarNav";
 
 export const dynamic = "force-dynamic";
@@ -52,13 +53,15 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (role !== "ADMIN") redirect("/dashboard");
 
   return (
-    <AppShell
-      groups={groups}
-      email={session.user.email ?? "unknown"}
-      role={role}
-      variant="admin"
-    >
-      {children}
-    </AppShell>
+    <ShellProviders>
+      <AppShell
+        groups={groups}
+        email={session.user.email ?? "unknown"}
+        role={role}
+        variant="admin"
+      >
+        {children}
+      </AppShell>
+    </ShellProviders>
   );
 }

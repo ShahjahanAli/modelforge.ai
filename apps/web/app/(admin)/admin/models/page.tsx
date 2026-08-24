@@ -12,7 +12,9 @@ import {
   grantModelToAllPlansAction,
   registerDiscoveredAction,
   upsertModelAction,
+  upsertRemoteModelAction,
 } from "./actions";
+import { RemoteModelForm } from "@/components/admin/RemoteModelForm";
 
 interface DiscoveredWeight {
   relativePath: string;
@@ -69,7 +71,7 @@ export default async function AdminModelsPage() {
       <PageHeader
         eyebrow="Operations"
         title="Model registry"
-        description="Register GGUF weights and pricing. Files are discovered under MODEL_WEIGHTS_DIR; registration is what makes a model callable."
+        description="Register local GGUF weights and remote OpenAI-compatible providers (Gemini, OpenRouter, OpenAI). Platform default controls which LLM chat / Anusandhan / model:auto use."
         actions={
           <Badge tone={unregistered.length > 0 ? "warn" : "neutral"} dot={unregistered.length > 0}>
             {unregistered.length} unregistered on disk
@@ -198,7 +200,22 @@ export default async function AdminModelsPage() {
 
       <Panel>
         <PanelHeader
-          title="Register manually"
+          title="Remote LLM provider"
+          description="Gemini, OpenRouter, OpenAI, or any OpenAI-compatible API. Set as platform default to route chat / Anusandhan / model:auto through the provider instead of local GGUF."
+          actions={
+            <Badge tone="info" dot>
+              Gemini · OpenRouter · OpenAI
+            </Badge>
+          }
+        />
+        <PanelBody>
+          <RemoteModelForm action={upsertRemoteModelAction} />
+        </PanelBody>
+      </Panel>
+
+      <Panel>
+        <PanelHeader
+          title="Register local GGUF manually"
           description="Upserts by public slug — use this to override inferred values"
         />
         <PanelBody>
@@ -231,7 +248,7 @@ export default async function AdminModelsPage() {
       <Panel>
         <PanelHeader
           title="Registered models"
-          description={`${models.length} total. Platform default is used for model:auto and is warmed into the model pool automatically.`}
+          description={`${models.length} total. Platform default drives model:auto, Anusandhan chat, and warm-start (local pool or remote provider).`}
         />
         {models.length === 0 ? (
           <EmptyState icon={Cpu} title="No models registered yet" />
@@ -241,9 +258,9 @@ export default async function AdminModelsPage() {
               <thead>
                 <tr>
                   <th>Model</th>
-                  <th>Weights</th>
+                  <th>Provider</th>
+                  <th>Weights / upstream</th>
                   <th>Quant / ctx</th>
-                  <th className="text-right">Threads</th>
                   <th className="text-right">Pricing ¢/M</th>
                   <th>Status</th>
                   <th>Plan access</th>
@@ -262,11 +279,29 @@ export default async function AdminModelsPage() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="max-w-56 truncate font-mono text-xs">{model.weightsPath}</td>
+                    <td>
+                      {model.providerKind === "OPENAI_COMPAT" ? (
+                        <Badge tone="info">
+                          {/generativelanguage\.googleapis\.com/i.test(model.remoteBaseUrl ?? "")
+                            ? "Gemini"
+                            : /openrouter\.ai/i.test(model.remoteBaseUrl ?? "")
+                              ? "OpenRouter"
+                              : /api\.openai\.com/i.test(model.remoteBaseUrl ?? "")
+                                ? "OpenAI"
+                                : "Remote"}
+                        </Badge>
+                      ) : (
+                        <Badge tone="neutral">Local GGUF</Badge>
+                      )}
+                    </td>
+                    <td className="max-w-56 truncate font-mono text-xs">
+                      {model.providerKind === "OPENAI_COMPAT"
+                        ? `${model.remoteBaseUrl ?? "—"} · ${model.remoteModelId ?? "—"}`
+                        : model.weightsPath || "—"}
+                    </td>
                     <td className="whitespace-nowrap font-mono text-xs">
                       {model.quantization} · {model.contextLength.toLocaleString()}
                     </td>
-                    <td className="text-right font-mono tabular-nums">{model.nThreads}</td>
                     <td className="whitespace-nowrap text-right font-mono tabular-nums text-content-primary">
                       {model.pricePerMTokIn} / {model.pricePerMTokOut}
                     </td>
@@ -298,7 +333,11 @@ export default async function AdminModelsPage() {
                         <RemoveModelButton
                           modelId={model.modelId}
                           displayName={model.displayName}
-                          weightsPath={model.weightsPath}
+                          weightsPath={
+                            model.providerKind === "OPENAI_COMPAT"
+                              ? model.remoteModelId ?? "remote"
+                              : model.weightsPath
+                          }
                           status={model.status}
                         />
                       </div>
