@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import { prisma } from "@modelforge/db";
 import * as argon2 from "argon2";
 
 async function verifyPassword(password: string, hash: string): Promise<boolean> {
@@ -31,6 +30,7 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials.password) return null;
+        const { prisma } = await import("@modelforge/db");
         const user = await prisma.customer.findUnique({
           where: { email: credentials.email.toLowerCase() },
         });

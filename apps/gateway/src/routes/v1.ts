@@ -59,6 +59,9 @@ import {
   diarizationConfigFromEnv,
   diarizationVoiceEnvFields,
 } from "../lib/voice/diarizationConfig.js";
+import { isGeminiVoicePipeline } from "../lib/voice/geminiAudio.js";
+import { transcribeUploadedAudio } from "../lib/voice/transcribeUploadedAudio.js";
+import { meterGeminiVoiceUsage } from "../lib/meterGeminiVoice.js";
 
 export const v1Router = Router();
 const voiceWindow = new Map<string, { count: number; resetAt: number }>();
@@ -209,6 +212,69 @@ v1Router.post(
         current.count += 1;
       }
 
+      const fileNameRaw = String(req.header("x-audio-filename") ?? "audio.webm");
+      const userAnalysisPrompt =
+        typeof req.query.prompt === "string" ? req.query.prompt.trim() : "";
+
+      // Gemini bypass: one multimodal call = ASR + diarization (+ analysis). Real token metering.
+      if (isGeminiVoicePipeline()) {
+        const { publicTranscript, transcript, transcribeMs, gemini, analysis } =
+          await transcribeUploadedAudio({
+            audioBuffer,
+            fileName: fileNameRaw,
+            mimeType,
+            geminiMode: userAnalysisPrompt ? "analyze" : "transcribe",
+            analysisHint: userAnalysisPrompt || undefined,
+          });
+        if (!gemini) {
+          throw new Error("Gemini voice pipeline returned no usage metadata");
+        }
+        await meterGeminiVoiceUsage({
+          auth: req.auth!,
+          requestId: req.requestId,
+          result: gemini,
+        });
+        const durationSec = audioDurationSec({
+          segments: transcript.segments,
+          text: transcript.text,
+          bytes: audioBuffer.length,
+        });
+        console.log(
+          JSON.stringify({
+            event: "voice.analyzed",
+            customerId: req.auth!.customerId,
+            requestId: req.requestId,
+            bytes: audioBuffer.length,
+            transcribeMs,
+            transcriptChars: transcript.text.length,
+            analysisChars: (analysis ?? "").length,
+            provider: transcript.provider,
+            model: transcript.model,
+            pipeline: "gemini",
+            speakers: publicTranscript.speakers,
+            segmentCount: publicTranscript.segments.length,
+            promptTokens: gemini.usage.promptTokens,
+            completionTokens: gemini.usage.completionTokens,
+            analysisModel: gemini.modelSlug,
+          }),
+        );
+        return res.json({
+          transcript: publicTranscript,
+          analysis: analysis ?? "",
+          metrics: {
+            transcribeMs,
+            audioDurationSec: Number(durationSec.toFixed(2)),
+            sttBillableUnits: gemini.usage.promptTokens + gemini.usage.completionTokens,
+            diarizationEnabled: true,
+            speakerCount: publicTranscript.speakers.length,
+            analysisModel: gemini.modelSlug,
+            pipeline: "gemini",
+            promptTokens: gemini.usage.promptTokens,
+            completionTokens: gemini.usage.completionTokens,
+          },
+        });
+      }
+
       const uploadDir = await ensureVoiceUploadDir(process.env.VOICE_UPLOAD_DIR ?? "./data/audio");
       const whisperScript = resolveVoicePath(
         process.env.STT_FASTER_WHISPER_SCRIPT ?? "scripts/faster-whisper-transcribe.py",
@@ -224,7 +290,6 @@ v1Router.post(
         console.log(`[voice.cleanup] removed=${deleted}`);
       }
 
-      const fileNameRaw = String(req.header("x-audio-filename") ?? "audio.webm");
       const fileNameSafe = fileNameRaw.replace(/[^a-zA-Z0-9._-]/g, "_");
       const storedPath = path.join(uploadDir, `${Date.now()}-${randomUUID()}-${fileNameSafe}`);
       await writeFile(storedPath, audioBuffer);
@@ -365,8 +430,6 @@ v1Router.post(
         });
       }
 
-      const userAnalysisPrompt =
-        typeof req.query.prompt === "string" ? req.query.prompt.trim() : "";
       const analysisPrompt = userAnalysisPrompt
         ? buildVoiceAnalysisPrompt(transcript, userAnalysisPrompt)
         : null;

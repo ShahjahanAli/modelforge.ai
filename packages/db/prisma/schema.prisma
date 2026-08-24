@@ -223,8 +223,8 @@ model HostedModel {
   nThreads          Int                    @default(8)
   gpuLayers         Int                    @default(0)
   status            ModelStatus            @default(INACTIVE)
-  pricePerMTokIn    Int
-  pricePerMTokOut   Int
+  pricePerMTokIn    Float
+  pricePerMTokOut   Float
   expectedTokPerSec Float?
   qualityClass      Int                    @default(50)
   latencyClass      Int                    @default(50)
@@ -274,8 +274,8 @@ model PricingVersion {
   id              String             @id @default(cuid())
   model           HostedModel        @relation(fields: [hostedModelId], references: [id], onDelete: Cascade)
   hostedModelId   String
-  pricePerMTokIn  Int
-  pricePerMTokOut Int
+  pricePerMTokIn  Float
+  pricePerMTokOut Float
   currency        String             @default("USD")
   effectiveFrom   DateTime           @default(now())
   effectiveTo     DateTime?

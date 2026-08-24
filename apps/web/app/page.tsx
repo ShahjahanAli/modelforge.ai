@@ -28,10 +28,21 @@ const capabilities = [
 ];
 
 export default async function HomePage() {
-  const session = await getServerSession(authOptions);
-  if (session?.user) {
-    const role = (session.user as { role?: string }).role;
-    redirect(role === "ADMIN" ? "/admin/infra" : "/dashboard");
+  try {
+    const session = await getServerSession(authOptions);
+    if (session?.user) {
+      const role = (session.user as { role?: string }).role;
+      redirect(role === "ADMIN" ? "/admin/infra" : "/dashboard");
+    }
+  } catch (error) {
+    const digest = (error as { digest?: string }).digest;
+    if (typeof digest === "string" && digest.startsWith("NEXT_REDIRECT")) throw error;
+    console.error(
+      JSON.stringify({
+        event: "web.home.session_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
 
   return (

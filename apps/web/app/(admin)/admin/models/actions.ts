@@ -241,6 +241,197 @@ export async function registerDiscoveredAction(formData: FormData) {
   revalidatePath("/admin/infra");
 }
 
+export async function updateModelPropertiesAction(formData: FormData): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  const admin = await requireAdmin();
+  const modelId = String(formData.get("modelId") ?? "").trim();
+  if (!modelId) return { ok: false, message: "Model id required" };
+
+  const existing = await prisma.hostedModel.findUnique({
+    where: { modelId },
+    select: {
+      id: true,
+      modelId: true,
+      displayName: true,
+      providerKind: true,
+      weightsPath: true,
+      quantization: true,
+      contextLength: true,
+      nThreads: true,
+      pricePerMTokIn: true,
+      pricePerMTokOut: true,
+      remoteBaseUrl: true,
+      remoteModelId: true,
+      credentialId: true,
+    },
+  });
+  if (!existing) return { ok: false, message: "Model not found" };
+
+  const displayName = String(formData.get("displayName") ?? "").trim();
+  const contextLength = Number(formData.get("contextLength") || existing.contextLength);
+  const pricePerMTokIn = Number(formData.get("pricePerMTokIn") || existing.pricePerMTokIn);
+  const pricePerMTokOut = Number(formData.get("pricePerMTokOut") || existing.pricePerMTokOut);
+
+  if (!displayName) return { ok: false, message: "Display name is required" };
+  if (!Number.isFinite(contextLength) || contextLength < 512) {
+    return { ok: false, message: "Context length must be at least 512" };
+  }
+  if (!Number.isFinite(pricePerMTokIn) || pricePerMTokIn < 0) {
+    return { ok: false, message: "Input price must be a non-negative number" };
+  }
+  if (!Number.isFinite(pricePerMTokOut) || pricePerMTokOut < 0) {
+    return { ok: false, message: "Output price must be a non-negative number" };
+  }
+
+  try {
+    if (existing.providerKind === "OPENAI_COMPAT") {
+      const remoteBaseUrl = String(formData.get("remoteBaseUrl") ?? "")
+        .trim()
+        .replace(/\/+$/, "");
+      const remoteModelId = String(formData.get("remoteModelId") ?? "").trim();
+      const quantization = String(
+        formData.get("quantization") ?? existing.quantization ?? "remote",
+      ).trim();
+      const apiKey = String(formData.get("apiKey") ?? "").trim();
+
+      if (!remoteBaseUrl || !remoteModelId) {
+        return { ok: false, message: "Base URL and upstream model id are required" };
+      }
+
+      let credentialId = existing.credentialId ?? undefined;
+      if (apiKey) {
+        const sealed = encryptProviderSecret(apiKey);
+        const credentialLabel = /generativelanguage\.googleapis\.com/i.test(remoteBaseUrl)
+          ? "Gemini"
+          : /openrouter\.ai/i.test(remoteBaseUrl)
+            ? "OpenRouter"
+            : /api\.openai\.com/i.test(remoteBaseUrl)
+              ? "OpenAI"
+              : "Remote";
+        if (existing.credentialId) {
+          await prisma.providerCredential.update({
+            where: { id: existing.credentialId },
+            data: {
+              label: credentialLabel,
+              ciphertext: sealed.ciphertext,
+              iv: sealed.iv,
+              authTag: sealed.authTag,
+              keyPrefix: sealed.keyPrefix,
+            },
+          });
+          credentialId = existing.credentialId;
+        } else {
+          const created = await prisma.providerCredential.create({
+            data: {
+              label: credentialLabel,
+              providerKind: "OPENAI_COMPAT",
+              ciphertext: sealed.ciphertext,
+              iv: sealed.iv,
+              authTag: sealed.authTag,
+              keyPrefix: sealed.keyPrefix,
+            },
+          });
+          credentialId = created.id;
+        }
+      }
+
+      await prisma.hostedModel.update({
+        where: { id: existing.id },
+        data: {
+          displayName,
+          contextLength,
+          pricePerMTokIn,
+          pricePerMTokOut,
+          quantization: quantization || "remote",
+          remoteBaseUrl,
+          remoteModelId,
+          ...(credentialId ? { credentialId } : {}),
+        },
+      });
+    } else {
+      const weightsPath = String(formData.get("weightsPath") ?? "").trim();
+      const quantization = String(
+        formData.get("quantization") ?? existing.quantization ?? "Q4_K_M",
+      ).trim();
+      const nThreads = Number(formData.get("nThreads") || existing.nThreads);
+      if (!weightsPath) return { ok: false, message: "GGUF path is required" };
+      if (!Number.isFinite(nThreads) || nThreads < 1) {
+        return { ok: false, message: "Threads must be at least 1" };
+      }
+
+      await prisma.hostedModel.update({
+        where: { id: existing.id },
+        data: {
+          displayName,
+          contextLength,
+          pricePerMTokIn,
+          pricePerMTokOut,
+          weightsPath,
+          quantization: quantization || "Q4_K_M",
+          nThreads,
+        },
+      });
+    }
+
+    const pricesChanged =
+      pricePerMTokIn !== existing.pricePerMTokIn || pricePerMTokOut !== existing.pricePerMTokOut;
+    if (pricesChanged) {
+      const now = new Date();
+      await prisma.pricingVersion.updateMany({
+        where: { hostedModelId: existing.id, effectiveTo: null },
+        data: { effectiveTo: now },
+      });
+      await prisma.pricingVersion.create({
+        data: {
+          hostedModelId: existing.id,
+          pricePerMTokIn,
+          pricePerMTokOut,
+          effectiveFrom: now,
+        },
+      });
+    }
+
+    await writeAuditEvent({
+      actorType: "admin",
+      actorId: admin.id,
+      action: "model.update_properties",
+      resourceType: "HostedModel",
+      resourceId: existing.id,
+      before: {
+        displayName: existing.displayName,
+        contextLength: existing.contextLength,
+        pricePerMTokIn: existing.pricePerMTokIn,
+        pricePerMTokOut: existing.pricePerMTokOut,
+        weightsPath: existing.weightsPath,
+        remoteBaseUrl: existing.remoteBaseUrl,
+        remoteModelId: existing.remoteModelId,
+      },
+      after: {
+        modelId,
+        displayName,
+        contextLength,
+        pricePerMTokIn,
+        pricePerMTokOut,
+        pricesChanged,
+        keyUpdated: Boolean(String(formData.get("apiKey") ?? "").trim()),
+      },
+    });
+
+    revalidatePath("/admin/models");
+    revalidatePath("/admin/infra");
+    revalidatePath("/models");
+    revalidatePath("/chat");
+    return { ok: true, message: `${displayName} properties saved` };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Failed to update model",
+    };
+  }
+}
+
 export async function grantModelToAllPlansAction(formData: FormData) {
   const admin = await requireAdmin();
   const modelId = String(formData.get("modelId"));

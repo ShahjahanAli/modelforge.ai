@@ -277,7 +277,7 @@ export function ModelPoolControls({
                     <div className="font-medium text-content-primary">{model.displayName}</div>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
                       <span className="mono-chip">{model.modelId}</span>
-                      {model.isPlatformDefault ? <Badge tone="brand">Platform default</Badge> : null}
+                      {model.isPlatformDefault ? <Badge tone="info">Platform default</Badge> : null}
                       {size && <span className="text-[11px] text-content-muted">{size}</span>}
                     </div>
                   </td>

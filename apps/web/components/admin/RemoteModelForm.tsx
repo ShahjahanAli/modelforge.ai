@@ -44,8 +44,8 @@ const PRESETS: ProviderPreset[] = [
     remoteModelPlaceholder: "gemini-3.6-flash",
     apiKeyPlaceholder: "AIza… (stored encrypted)",
     contextLength: 1048576,
-    pricePerMTokIn: 15,
-    pricePerMTokOut: 60,
+    pricePerMTokIn: 0.75,
+    pricePerMTokOut: 3.75,
   },
   {
     id: "openai",
@@ -263,6 +263,8 @@ export function RemoteModelForm({
           className="input"
           name="pricePerMTokIn"
           type="number"
+          min={0}
+          step="0.01"
           value={priceIn}
           onChange={(event) => setPriceIn(Number(event.target.value) || 0)}
           disabled={pending}
@@ -277,6 +279,8 @@ export function RemoteModelForm({
           className="input"
           name="pricePerMTokOut"
           type="number"
+          min={0}
+          step="0.01"
           value={priceOut}
           onChange={(event) => setPriceOut(Number(event.target.value) || 0)}
           disabled={pending}

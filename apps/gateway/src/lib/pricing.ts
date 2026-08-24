@@ -29,8 +29,9 @@ export function computeCostMicros(
   pricePerMTokIn: number,
   pricePerMTokOut: number,
 ): bigint {
-  const centTokenUnits =
-    BigInt(promptTokens) * BigInt(pricePerMTokIn) +
-    BigInt(completionTokens) * BigInt(pricePerMTokOut);
-  return (centTokenUnits + 99n) / 100n;
+  // price* is ¢ per million tokens (may be fractional, e.g. 0.75).
+  // micros = tokens/1e6 * ¢ * 10_000 = tokens * ¢ / 100
+  const micros =
+    (promptTokens * pricePerMTokIn + completionTokens * pricePerMTokOut) / 100;
+  return BigInt(Math.max(0, Math.round(micros)));
 }

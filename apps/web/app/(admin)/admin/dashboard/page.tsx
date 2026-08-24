@@ -15,6 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import { gatewayFetch } from "@/lib/gateway";
+import { usageEventCostUsd } from "@/lib/usageCost";
 import { UsageChart, type UsagePoint } from "@/components/UsageChart";
 import { LiveRefresh } from "@/components/LiveRefresh";
 import { RecentRequestsTable } from "@/components/RecentRequestsTable";
@@ -67,8 +68,14 @@ function percentile(values: number[], p: number): number {
   return sorted[index] ?? 0;
 }
 
+function moneyUsd(usd: number): string {
+  if (!Number.isFinite(usd) || usd === 0) return "$0.000000";
+  if (usd < 0.000001) return "<$0.000001";
+  return `$${usd.toFixed(6)}`;
+}
+
 function money(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+  return moneyUsd(cents / 100);
 }
 
 function formatUptime(seconds: number): string {
@@ -182,15 +189,19 @@ export default async function AdminDashboardPage() {
       const prompt = row._sum.promptTokens ?? 0;
       const completion = row._sum.completionTokens ?? 0;
       const model = modelBySlug.get(row.modelSlug);
-      const revenueCents = model
-        ? (prompt / 1_000_000) * model.pricePerMTokIn +
-          (completion / 1_000_000) * model.pricePerMTokOut
-        : 0;
+      const costs = usageEventCostUsd({
+        promptTokens: prompt,
+        completionTokens: completion,
+        pricePerMTokIn: model?.pricePerMTokIn,
+        pricePerMTokOut: model?.pricePerMTokOut,
+      });
       return {
         slug: row.modelSlug,
         requests: row._count,
         tokens: prompt + completion,
-        revenueCents,
+        inputCostUsd: costs.inputCostUsd,
+        outputCostUsd: costs.outputCostUsd,
+        revenueCents: costs.totalCostUsd * 100,
       };
     })
     .sort((a, b) => b.tokens - a.tokens);
@@ -539,7 +550,9 @@ export default async function AdminDashboardPage() {
                     <th>Model</th>
                     <th className="text-right">Requests</th>
                     <th className="text-right">Tokens</th>
-                    <th className="text-right">Usage revenue</th>
+                    <th className="text-right">Input $</th>
+                    <th className="text-right">Output $</th>
+                    <th className="text-right">Total $</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -555,7 +568,13 @@ export default async function AdminDashboardPage() {
                         {row.tokens.toLocaleString()}
                       </td>
                       <td className="text-right font-mono tabular-nums">
-                        {money(row.revenueCents)}
+                        {moneyUsd(row.inputCostUsd)}
+                      </td>
+                      <td className="text-right font-mono tabular-nums">
+                        {moneyUsd(row.outputCostUsd)}
+                      </td>
+                      <td className="text-right font-mono tabular-nums text-content-primary">
+                        {moneyUsd(row.inputCostUsd + row.outputCostUsd)}
                       </td>
                     </tr>
                   ))}
@@ -631,15 +650,26 @@ export default async function AdminDashboardPage() {
         ) : (
           <RecentRequestsTable
             showCustomer
-            rows={events.slice(0, 1_000).map((event) => ({
-              id: event.id,
-              createdAt: event.createdAt.toISOString(),
-              customer: customerById.get(event.customerId)?.email ?? "Deleted customer",
-              model: event.modelSlug,
-              promptTokens: event.promptTokens,
-              completionTokens: event.completionTokens,
-              latencyMs: event.latencyMs,
-            }))}
+            rows={events.slice(0, 1_000).map((event) => {
+              const model = modelBySlug.get(event.modelSlug);
+              const costs = usageEventCostUsd({
+                promptTokens: event.promptTokens,
+                completionTokens: event.completionTokens,
+                pricePerMTokIn: model?.pricePerMTokIn,
+                pricePerMTokOut: model?.pricePerMTokOut,
+              });
+              return {
+                id: event.id,
+                createdAt: event.createdAt.toISOString(),
+                customer: customerById.get(event.customerId)?.email ?? "Deleted customer",
+                model: event.modelSlug,
+                promptTokens: event.promptTokens,
+                completionTokens: event.completionTokens,
+                latencyMs: event.latencyMs,
+                inputCostUsd: costs.inputCostUsd,
+                outputCostUsd: costs.outputCostUsd,
+              };
+            })}
           />
         )}
       </Panel>

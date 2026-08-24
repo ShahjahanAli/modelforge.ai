@@ -49,7 +49,7 @@ export default async function ModelsPage() {
                   </h2>
                   <p className="mt-1.5 flex flex-wrap items-center gap-1.5">
                     <span className="mono-chip">{model.modelId}</span>
-                    {model.isPlatformDefault ? <Badge tone="brand">Platform default</Badge> : null}
+                    {model.isPlatformDefault ? <Badge tone="info">Platform default</Badge> : null}
                   </p>
                 </div>
                 <StatusBadge status={model.status} />

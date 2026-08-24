@@ -12,6 +12,11 @@ import {
 } from "./index.js";
 import { toPublicTranscript, transcribeWithDiarization } from "./diarize.js";
 import { diarizationConfigFromEnv, diarizationVoiceEnvFields } from "./diarizationConfig.js";
+import {
+  isGeminiVoicePipeline,
+  runGeminiVoicePipeline,
+  type GeminiVoiceResult,
+} from "./geminiAudio.js";
 import type { TranscriptArtifact } from "./types.js";
 
 export interface VoiceTranscribeResult {
@@ -19,20 +24,23 @@ export interface VoiceTranscribeResult {
   transcript: TranscriptArtifact;
   transcribeMs: number;
   storedPath: string;
+  /** Present when VOICE_PIPELINE=gemini. */
+  gemini?: GeminiVoiceResult;
+  analysis?: string;
 }
 
 export async function transcribeUploadedAudio(input: {
   audioBuffer: Buffer;
   fileName: string;
   initialPrompt?: string;
+  mimeType?: string;
+  /** analyze = include investigator summary in the same Gemini call. */
+  geminiMode?: "transcribe" | "analyze";
+  analysisHint?: string;
 }): Promise<VoiceTranscribeResult> {
   const maxUploadMb = Math.max(1, Number(process.env.VOICE_MAX_UPLOAD_MB ?? 50));
   const rate = Number(process.env.VOICE_RATE_LIMIT_PER_HOUR ?? 20);
   const uploadDir = await ensureVoiceUploadDir(process.env.VOICE_UPLOAD_DIR ?? "./data/audio");
-  const whisperScript = resolveVoicePath(
-    process.env.STT_FASTER_WHISPER_SCRIPT ?? "scripts/faster-whisper-transcribe.py",
-  );
-  const nemoScript = resolveVoicePath(process.env.STT_NEMO_SCRIPT ?? "scripts/nemo-asr-transcribe.py");
 
   await cleanupOldVoiceUploads(uploadDir, Number(process.env.VOICE_RETENTION_HOURS ?? 24));
 
@@ -41,6 +49,31 @@ export async function transcribeUploadedAudio(input: {
   await writeFile(storedPath, input.audioBuffer);
 
   const transcribeStarted = Date.now();
+
+  if (isGeminiVoicePipeline()) {
+    const gemini = await runGeminiVoicePipeline({
+      audioBuffer: input.audioBuffer,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      mode: input.geminiMode ?? "transcribe",
+      languageHint: process.env.STT_LANGUAGE || "bn",
+      analysisHint: input.analysisHint,
+    });
+    return {
+      publicTranscript: gemini.publicTranscript,
+      transcript: gemini.transcript,
+      transcribeMs: Date.now() - transcribeStarted,
+      storedPath,
+      gemini,
+      analysis: gemini.analysis,
+    };
+  }
+
+  const whisperScript = resolveVoicePath(
+    process.env.STT_FASTER_WHISPER_SCRIPT ?? "scripts/faster-whisper-transcribe.py",
+  );
+  const nemoScript = resolveVoicePath(process.env.STT_NEMO_SCRIPT ?? "scripts/nemo-asr-transcribe.py");
+
   const voiceEnv = await resolveVoiceEnv({
     VOICE_ENABLED: process.env.VOICE_ENABLED !== "false",
     VOICE_UPLOAD_DIR: uploadDir,

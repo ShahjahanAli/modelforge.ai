@@ -4,6 +4,7 @@ import { prisma } from "@modelforge/db";
 import { summarizeUsageEvents, classifyUsageSlug, effectiveMonthlyQuota } from "@modelforge/platform";
 import { Activity, Coins, Database, Gauge, Hash, Layers, Mic, Timer } from "lucide-react";
 import { authOptions } from "@/lib/auth";
+import { usageEventCostUsd } from "@/lib/usageCost";
 import { UsageChart, type UsagePoint } from "@/components/UsageChart";
 import { RecentRequestsTable } from "@/components/RecentRequestsTable";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -55,7 +56,14 @@ export default async function DashboardPage() {
 
   const byModel = new Map<
     string,
-    { model: string; requests: number; tokens: number; costCents: number }
+    {
+      model: string;
+      requests: number;
+      tokens: number;
+      costCents: number;
+      inputCostUsd: number;
+      outputCostUsd: number;
+    }
   >();
 
   let promptTotal = 0;
@@ -78,22 +86,29 @@ export default async function DashboardPage() {
     latencies.push(event.latencyMs);
 
     const priced = priceBySlug.get(event.modelSlug);
-    const eventCost =
-      kind === "llm" && priced
-        ? (event.promptTokens / 1e6) * priced.pricePerMTokIn +
-          (event.completionTokens / 1e6) * priced.pricePerMTokOut
-        : 0;
-    costCents += eventCost;
+    const costs = usageEventCostUsd({
+      promptTokens: event.promptTokens,
+      completionTokens: event.completionTokens,
+      pricePerMTokIn: priced?.pricePerMTokIn,
+      pricePerMTokOut: priced?.pricePerMTokOut,
+    });
+    // Keep legacy "costCents" total as USD*100 for existing StatCard math.
+    const eventCostCents = costs.totalCostUsd * 100;
+    if (kind === "llm") costCents += eventCostCents;
 
     const row = byModel.get(event.modelSlug) ?? {
       model: event.modelSlug,
       requests: 0,
       tokens: 0,
       costCents: 0,
+      inputCostUsd: 0,
+      outputCostUsd: 0,
     };
     row.requests += 1;
     row.tokens += event.promptTokens + event.completionTokens;
-    row.costCents += eventCost;
+    row.costCents += eventCostCents;
+    row.inputCostUsd += costs.inputCostUsd;
+    row.outputCostUsd += costs.outputCostUsd;
     byModel.set(event.modelSlug, row);
   }
 
@@ -320,7 +335,9 @@ export default async function DashboardPage() {
                   <th className="text-right">Requests</th>
                   <th className="text-right">Units</th>
                   <th className="text-right">Share</th>
-                  <th className="text-right">Spend</th>
+                  <th className="text-right">Input $</th>
+                  <th className="text-right">Output $</th>
+                  <th className="text-right">Total $</th>
                 </tr>
               </thead>
               <tbody>
@@ -351,7 +368,13 @@ export default async function DashboardPage() {
                         </div>
                       </td>
                       <td className="whitespace-nowrap text-right font-mono tabular-nums">
-                        ${(row.costCents / 100).toFixed(4)}
+                        ${row.inputCostUsd.toFixed(6)}
+                      </td>
+                      <td className="whitespace-nowrap text-right font-mono tabular-nums">
+                        ${row.outputCostUsd.toFixed(6)}
+                      </td>
+                      <td className="whitespace-nowrap text-right font-mono tabular-nums text-content-primary">
+                        ${(row.inputCostUsd + row.outputCostUsd).toFixed(6)}
                       </td>
                     </tr>
                   );
@@ -375,14 +398,25 @@ export default async function DashboardPage() {
             rows={[...events]
               .reverse()
               .slice(0, 1_000)
-              .map((event) => ({
-                id: event.id,
-                createdAt: event.createdAt.toISOString(),
-                model: event.modelSlug,
-                promptTokens: event.promptTokens,
-                completionTokens: event.completionTokens,
-                latencyMs: event.latencyMs,
-              }))}
+              .map((event) => {
+                const priced = priceBySlug.get(event.modelSlug);
+                const costs = usageEventCostUsd({
+                  promptTokens: event.promptTokens,
+                  completionTokens: event.completionTokens,
+                  pricePerMTokIn: priced?.pricePerMTokIn,
+                  pricePerMTokOut: priced?.pricePerMTokOut,
+                });
+                return {
+                  id: event.id,
+                  createdAt: event.createdAt.toISOString(),
+                  model: event.modelSlug,
+                  promptTokens: event.promptTokens,
+                  completionTokens: event.completionTokens,
+                  latencyMs: event.latencyMs,
+                  inputCostUsd: costs.inputCostUsd,
+                  outputCostUsd: costs.outputCostUsd,
+                };
+              })}
           />
         )}
       </Panel>

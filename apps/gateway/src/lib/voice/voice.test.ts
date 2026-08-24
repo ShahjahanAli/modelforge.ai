@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseGeminiVoiceJson } from "./geminiAudio.js";
 import {
   buildVoiceAnalysisPrompt,
   buildVoiceAnalysisSystemPrompt,
@@ -12,6 +13,30 @@ import {
 } from "./diarize.js";
 import { resolvePyannoteCloudModel } from "./pyannoteCloud.js";
 import { normalizeTranscript, isHallucinatedTranscriptText, repairSegmentTimestamps, type TranscriptArtifact } from "./types.js";
+
+describe("gemini voice JSON parse", () => {
+  it("parses speaker segments and analysis", () => {
+    const raw = JSON.stringify({
+      language: "bn",
+      text: "hello there",
+      analysis: "two party call",
+      segments: [
+        { speaker: "SPEAKER_00", startSec: 0, endSec: 1.5, text: "hello" },
+        { speaker: "SPEAKER_01", start: 1.5, end: 3, text: "there" },
+      ],
+    });
+    const parsed = parseGeminiVoiceJson(raw);
+    expect(parsed.language).toBe("bn");
+    expect(parsed.segments).toHaveLength(2);
+    expect(parsed.segments[1]?.startSec).toBe(1.5);
+    expect(parsed.analysis).toBe("two party call");
+  });
+
+  it("strips markdown fences", () => {
+    const raw = "```json\n{\"language\":\"bn\",\"text\":\"ok\",\"segments\":[],\"analysis\":\"\"}\n```";
+    expect(parseGeminiVoiceJson(raw).text).toBe("ok");
+  });
+});
 
 describe("diarize-first helpers", () => {
   it("coalesces adjacent same-speaker turns", () => {

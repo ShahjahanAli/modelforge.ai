@@ -162,7 +162,7 @@ Rules enforced by design:
 |---|---|---|
 | GET | `/models` | Entitled model list |
 | POST | `/chat/completions` | Streaming / non-streaming chat; `model: "auto"` → platform default |
-| POST | `/voice/analyze` | ASR (+ diarization) **then** LLM analysis |
+| POST | `/voice/analyze` | ASR (+ diarization) **then** LLM analysis; or `VOICE_PIPELINE=gemini` single multimodal call |
 | GET/POST | `/graph/*` | Neo4j stats / query / store |
 | GET | `/usage/receipts/:requestId` | Signed usage receipts |
 

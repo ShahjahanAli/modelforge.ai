@@ -7,6 +7,7 @@ import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { HuggingFaceBrowser } from "@/components/admin/HuggingFaceBrowser";
 import { RemoveModelButton } from "@/components/admin/RemoveModelButton";
+import { EditModelButton } from "@/components/admin/EditModelButton";
 import { SetDefaultModelButton } from "@/components/admin/SetDefaultModelButton";
 import {
   grantModelToAllPlansAction,
@@ -40,9 +41,15 @@ const fields = [
   { name: "quantization", label: "Quantization", defaultValue: "Q4_K_M" },
   { name: "contextLength", label: "Context length", type: "number", defaultValue: 8192 },
   { name: "nThreads", label: "Threads", type: "number", defaultValue: 8 },
-  { name: "pricePerMTokIn", label: "Price ¢ / M input", type: "number", defaultValue: 20 },
-  { name: "pricePerMTokOut", label: "Price ¢ / M output", type: "number", defaultValue: 60 },
-];
+  { name: "pricePerMTokIn", label: "Price ¢ / M input", type: "number", defaultValue: 20, step: "0.01" },
+  { name: "pricePerMTokOut", label: "Price ¢ / M output", type: "number", defaultValue: 60, step: "0.01" },
+] as const;
+
+function formatPriceCents(value: number): string {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return Number(n.toFixed(4)).toString();
+}
 
 function formatGb(bytes: number): string {
   return bytes >= 1024 ** 3
@@ -229,10 +236,12 @@ export default async function AdminModelsPage() {
                   id={field.name}
                   className="input"
                   name={field.name}
-                  type={field.type ?? "text"}
-                  placeholder={field.placeholder}
-                  defaultValue={field.defaultValue}
-                  required={field.required}
+                  type={"type" in field ? field.type : "text"}
+                  placeholder={"placeholder" in field ? field.placeholder : undefined}
+                  defaultValue={"defaultValue" in field ? field.defaultValue : undefined}
+                  required={"required" in field ? field.required : undefined}
+                  step={"step" in field ? field.step : undefined}
+                  min={"type" in field && field.type === "number" ? 0 : undefined}
                 />
               </div>
             ))}
@@ -275,7 +284,7 @@ export default async function AdminModelsPage() {
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <span className="mono-chip">{model.modelId}</span>
                         {model.isPlatformDefault ? (
-                          <Badge tone="brand">Platform default</Badge>
+                          <Badge tone="info">Platform default</Badge>
                         ) : null}
                       </div>
                     </td>
@@ -303,7 +312,7 @@ export default async function AdminModelsPage() {
                       {model.quantization} · {model.contextLength.toLocaleString()}
                     </td>
                     <td className="whitespace-nowrap text-right font-mono tabular-nums text-content-primary">
-                      {model.pricePerMTokIn} / {model.pricePerMTokOut}
+                      {formatPriceCents(model.pricePerMTokIn)} / {formatPriceCents(model.pricePerMTokOut)}
                     </td>
                     <td>
                       <StatusBadge status={model.status} />
@@ -324,6 +333,22 @@ export default async function AdminModelsPage() {
                     </td>
                     <td className="text-right">
                       <div className="flex flex-wrap items-center justify-end gap-2">
+                        <EditModelButton
+                          model={{
+                            modelId: model.modelId,
+                            displayName: model.displayName,
+                            providerKind: model.providerKind,
+                            weightsPath: model.weightsPath,
+                            quantization: model.quantization,
+                            contextLength: model.contextLength,
+                            nThreads: model.nThreads,
+                            pricePerMTokIn: model.pricePerMTokIn,
+                            pricePerMTokOut: model.pricePerMTokOut,
+                            remoteBaseUrl: model.remoteBaseUrl,
+                            remoteModelId: model.remoteModelId,
+                            hasCredential: Boolean(model.credentialId),
+                          }}
+                        />
                         {!model.isPlatformDefault ? (
                           <SetDefaultModelButton
                             modelId={model.modelId}

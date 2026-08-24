@@ -11,6 +11,10 @@ export interface RecentRequestRow {
   promptTokens: number;
   completionTokens: number;
   latencyMs: number;
+  /** USD cost for prompt/input tokens (0 if unpriced). */
+  inputCostUsd?: number;
+  /** USD cost for completion/output tokens (0 if unpriced). */
+  outputCostUsd?: number;
 }
 
 interface RecentRequestsTableProps {
@@ -32,6 +36,12 @@ function localDateKey(iso: string): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value) || value === 0) return "$0.000000";
+  if (value < 0.000001) return "<$0.000001";
+  return `$${value.toFixed(6)}`;
 }
 
 function LocalTime({ iso }: { iso: string }) {
@@ -86,6 +96,44 @@ export function RecentRequestsTable({
   const timeZone = hydrated
     ? Intl.DateTimeFormat().resolvedOptions().timeZone || "Browser local"
     : "Browser local";
+
+  const modelCostSummary = useMemo(() => {
+    const byModel = new Map<
+      string,
+      {
+        model: string;
+        requests: number;
+        promptTokens: number;
+        completionTokens: number;
+        inputCostUsd: number;
+        outputCostUsd: number;
+      }
+    >();
+    for (const row of filteredRows) {
+      const entry = byModel.get(row.model) ?? {
+        model: row.model,
+        requests: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+      };
+      entry.requests += 1;
+      entry.promptTokens += row.promptTokens;
+      entry.completionTokens += row.completionTokens;
+      entry.inputCostUsd += row.inputCostUsd ?? 0;
+      entry.outputCostUsd += row.outputCostUsd ?? 0;
+      byModel.set(row.model, entry);
+    }
+    return [...byModel.values()].sort(
+      (a, b) => b.inputCostUsd + b.outputCostUsd - (a.inputCostUsd + a.outputCostUsd),
+    );
+  }, [filteredRows]);
+
+  const filteredTotalCostUsd = modelCostSummary.reduce(
+    (sum, row) => sum + row.inputCostUsd + row.outputCostUsd,
+    0,
+  );
 
   function resetFilters() {
     setRowLimit(10);
@@ -179,10 +227,71 @@ export function RecentRequestsTable({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2 text-[11px] text-content-muted sm:px-5">
         <span>
           Showing {visibleRows.length.toLocaleString()} of {filteredRows.length.toLocaleString()} matching
-          requests
+          requests · filtered spend {formatUsd(filteredTotalCostUsd)}
         </span>
         <span className="font-mono">Time zone: {timeZone}</span>
       </div>
+
+      {modelCostSummary.length > 0 ? (
+        <div className="border-b border-line px-4 py-3 sm:px-5">
+          <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold tracking-wide text-content-primary uppercase">
+                Cost by model
+              </p>
+              <p className="mt-0.5 text-[11px] text-content-muted">
+                Totals for the current filter set (not limited to visible rows)
+              </p>
+            </div>
+            <p className="font-mono text-xs tabular-nums text-content-primary">
+              All models {formatUsd(filteredTotalCostUsd)}
+            </p>
+          </div>
+          <div className="table-scroll rounded-lg border border-line">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th className="text-right">Calls</th>
+                  <th className="text-right">Input $</th>
+                  <th className="text-right">Output $</th>
+                  <th className="text-right">Total $</th>
+                  <th className="text-right">Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modelCostSummary.map((row) => {
+                  const total = row.inputCostUsd + row.outputCostUsd;
+                  const share =
+                    filteredTotalCostUsd > 0 ? (total / filteredTotalCostUsd) * 100 : 0;
+                  return (
+                    <tr key={row.model}>
+                      <td>
+                        <span className="mono-chip">{row.model}</span>
+                      </td>
+                      <td className="text-right font-mono tabular-nums">
+                        {row.requests.toLocaleString()}
+                      </td>
+                      <td className="text-right font-mono tabular-nums">
+                        {formatUsd(row.inputCostUsd)}
+                      </td>
+                      <td className="text-right font-mono tabular-nums">
+                        {formatUsd(row.outputCostUsd)}
+                      </td>
+                      <td className="text-right font-mono tabular-nums text-content-primary">
+                        {formatUsd(total)}
+                      </td>
+                      <td className="text-right font-mono text-xs tabular-nums text-content-muted">
+                        {share.toFixed(1)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       {visibleRows.length === 0 ? (
         <p className="px-5 py-10 text-center text-sm text-content-muted">
@@ -199,41 +308,57 @@ export function RecentRequestsTable({
                 <th className="text-right">Input</th>
                 <th className="text-right">Output</th>
                 <th className="text-right">Total tokens</th>
+                <th className="text-right">Input $</th>
+                <th className="text-right">Output $</th>
+                <th className="text-right">Cost $</th>
                 <th className="text-right">Latency</th>
                 <th />
               </tr>
             </thead>
             <tbody>
-              {visibleRows.map((row) => (
-                <tr key={row.id}>
-                  <td className="whitespace-nowrap font-mono text-xs">
-                    <LocalTime iso={row.createdAt} />
-                  </td>
-                  {showCustomer && (
-                    <td className="max-w-52 truncate">{row.customer ?? "—"}</td>
-                  )}
-                  <td>
-                    <span className="mono-chip">{row.model}</span>
-                  </td>
-                  <td className="text-right font-mono tabular-nums">
-                    {row.promptTokens.toLocaleString()}
-                  </td>
-                  <td className="text-right font-mono tabular-nums">
-                    {row.completionTokens.toLocaleString()}
-                  </td>
-                  <td className="text-right font-mono tabular-nums text-content-primary">
-                    {(row.promptTokens + row.completionTokens).toLocaleString()}
-                  </td>
-                  <td className="whitespace-nowrap text-right font-mono tabular-nums">
-                    {row.latencyMs.toLocaleString()} ms
-                  </td>
-                  <td className="text-right">
-                    <a className="btn-ghost text-xs" href={`/requests`}>
-                      Debugger
-                    </a>
-                  </td>
-                </tr>
-              ))}
+              {visibleRows.map((row) => {
+                const inputUsd = row.inputCostUsd ?? 0;
+                const outputUsd = row.outputCostUsd ?? 0;
+                return (
+                  <tr key={row.id}>
+                    <td className="whitespace-nowrap font-mono text-xs">
+                      <LocalTime iso={row.createdAt} />
+                    </td>
+                    {showCustomer && (
+                      <td className="max-w-52 truncate">{row.customer ?? "—"}</td>
+                    )}
+                    <td>
+                      <span className="mono-chip">{row.model}</span>
+                    </td>
+                    <td className="text-right font-mono tabular-nums">
+                      {row.promptTokens.toLocaleString()}
+                    </td>
+                    <td className="text-right font-mono tabular-nums">
+                      {row.completionTokens.toLocaleString()}
+                    </td>
+                    <td className="text-right font-mono tabular-nums text-content-primary">
+                      {(row.promptTokens + row.completionTokens).toLocaleString()}
+                    </td>
+                    <td className="whitespace-nowrap text-right font-mono tabular-nums">
+                      {formatUsd(inputUsd)}
+                    </td>
+                    <td className="whitespace-nowrap text-right font-mono tabular-nums">
+                      {formatUsd(outputUsd)}
+                    </td>
+                    <td className="whitespace-nowrap text-right font-mono tabular-nums text-content-primary">
+                      {formatUsd(inputUsd + outputUsd)}
+                    </td>
+                    <td className="whitespace-nowrap text-right font-mono tabular-nums">
+                      {row.latencyMs.toLocaleString()} ms
+                    </td>
+                    <td className="text-right">
+                      <a className="btn-ghost text-xs" href={`/requests`}>
+                        Debugger
+                      </a>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

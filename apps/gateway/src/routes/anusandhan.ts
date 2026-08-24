@@ -26,8 +26,10 @@ import {
   startAttempt,
 } from "../lib/execution.js";
 import { audioDurationSec, sttBillableUnits } from "../lib/metering.js";
+import { meterGeminiVoiceUsage } from "../lib/meterGeminiVoice.js";
 import { computeCostMicros, getActivePricingVersion } from "../lib/pricing.js";
 import { enqueueUsage } from "../lib/queues.js";
+import { isGeminiVoicePipeline } from "../lib/voice/geminiAudio.js";
 import { transcribeUploadedAudio } from "../lib/voice/transcribeUploadedAudio.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { rateLimitMiddleware, rateLimitRpmMiddleware } from "../middleware/quota.js";
@@ -170,17 +172,38 @@ anusandhanRouter.post(
         headerPrompt ||
         (typeof req.query.initial_prompt === "string" ? req.query.initial_prompt.trim() : "") ||
         undefined;
-      const { publicTranscript, transcript, transcribeMs } = await transcribeUploadedAudio({
-        audioBuffer,
-        fileName,
-        initialPrompt,
-      });
+      const { publicTranscript, transcript, transcribeMs, gemini, analysis } =
+        await transcribeUploadedAudio({
+          audioBuffer,
+          fileName,
+          initialPrompt,
+          mimeType,
+          // ASR + diarization only here; intel-worker still does extract/normalize.
+          geminiMode: "transcribe",
+        });
 
       const durationSec = audioDurationSec({
         segments: transcript.segments,
         text: transcript.text,
         bytes: audioBuffer.length,
       });
+
+      let promptTokens = 0;
+      let completionTokens = 0;
+      let analysisModel: string | null = null;
+      let llmUsed = false;
+
+      if (gemini) {
+        await meterGeminiVoiceUsage({
+          auth: req.auth!,
+          requestId: req.requestId,
+          result: gemini,
+        });
+        promptTokens = gemini.usage.promptTokens;
+        completionTokens = gemini.usage.completionTokens;
+        analysisModel = gemini.modelSlug;
+        llmUsed = true;
+      }
 
       console.log(
         JSON.stringify({
@@ -193,21 +216,29 @@ anusandhanRouter.post(
           segmentCount: publicTranscript.segments.length,
           provider: transcript.provider,
           sttModel: transcript.model,
+          pipeline: isGeminiVoicePipeline() ? "gemini" : "local",
+          promptTokens,
+          completionTokens,
         }),
       );
 
       return res.json({
         client: "anusandhan",
         transcript: publicTranscript,
-        analysis: "",
+        analysis: analysis ?? "",
         metrics: {
           transcribeMs,
           audioDurationSec: Number(durationSec.toFixed(2)),
-          sttBillableUnits: sttBillableUnits(durationSec),
-          diarizationEnabled: process.env.DIARIZATION_ENABLED === "true",
+          sttBillableUnits: gemini ? promptTokens + completionTokens : sttBillableUnits(durationSec),
+          diarizationEnabled: gemini
+            ? true
+            : process.env.DIARIZATION_ENABLED === "true",
           speakerCount: publicTranscript.speakers.length,
-          analysisModel: null,
-          llmUsed: false,
+          analysisModel,
+          llmUsed,
+          pipeline: isGeminiVoicePipeline() ? "gemini" : "local",
+          promptTokens: gemini ? promptTokens : undefined,
+          completionTokens: gemini ? completionTokens : undefined,
         },
       });
     } catch (error) {
