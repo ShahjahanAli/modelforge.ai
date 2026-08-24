@@ -96,6 +96,7 @@ async function resolveRemoteEndpoint(modelId: string): Promise<{
   upstreamModel: string;
   headers: Record<string, string>;
   openRouter: boolean;
+  gemini: boolean;
 }> {
   const hosted = await prisma.hostedModel.findUnique({
     where: { modelId },
@@ -147,6 +148,7 @@ async function resolveRemoteEndpoint(modelId: string): Promise<{
     upstreamModel,
     headers,
     openRouter: isOpenRouterBase(base),
+    gemini: isGeminiBase(base),
   };
 }
 
@@ -176,6 +178,7 @@ export function generateStream(
       // Disable thinking for structured / cleanup jobs. Qwen3 otherwise burns
       // the budget in reasoning and returns a tiny stub in `content` (matches
       // OpenRouter activity showing 12–20 completion tokens).
+      // OpenRouter-only: Gemini's OpenAI-compat endpoint rejects top-level `reasoning`.
       const disableReasoning =
         process.env.REMOTE_LLM_DISABLE_REASONING !== "0" &&
         (endpoint.openRouter || process.env.REMOTE_LLM_DISABLE_REASONING === "1");
@@ -190,7 +193,7 @@ export function generateStream(
         stream: req.stream,
         ...(req.stream ? { stream_options: { include_usage: true } } : {}),
         ...(req.response_format ? { response_format: req.response_format } : {}),
-        ...(disableReasoning
+        ...(disableReasoning && !endpoint.gemini
           ? { reasoning: { effort: "none", exclude: true } }
           : {}),
       };
