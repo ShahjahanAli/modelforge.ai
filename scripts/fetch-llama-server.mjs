@@ -82,20 +82,45 @@ async function findServerBinary(dir) {
   return null;
 }
 
-const tag = process.env.LLAMA_RELEASE_TAG;
-const release = await fetchJson(
-  tag
-    ? `https://api.github.com/repos/${REPO}/releases/tags/${tag}`
-    : `https://api.github.com/repos/${REPO}/releases/latest`,
-);
-
 const pattern = assetPattern();
-const asset = release.assets.find((a) => pattern.test(a.name));
-if (!asset) {
-  console.error(`No asset matching ${pattern} in release ${release.tag_name}.`);
-  console.error("Available:", release.assets.map((a) => a.name).join("\n  "));
+
+/**
+ * ggml-org/llama.cpp marks a semantic tag (e.g. v0.2.0) as GitHub "latest", but
+ * the shippable binaries live on numbered builds (b9876, …). Prefer an explicit
+ * LLAMA_RELEASE_TAG; otherwise scan recent releases for a matching asset.
+ */
+async function resolveReleaseWithAsset() {
+  const tag = process.env.LLAMA_RELEASE_TAG;
+  if (tag) {
+    const release = await fetchJson(
+      `https://api.github.com/repos/${REPO}/releases/tags/${tag}`,
+    );
+    const asset = release.assets.find((a) => pattern.test(a.name));
+    if (!asset) {
+      console.error(`No asset matching ${pattern} in release ${release.tag_name}.`);
+      console.error("Available:", release.assets.map((a) => a.name).join("\n  "));
+      process.exit(1);
+    }
+    return { release, asset };
+  }
+
+  const pages = [
+    `https://api.github.com/repos/${REPO}/releases?per_page=40`,
+  ];
+  for (const url of pages) {
+    const releases = await fetchJson(url);
+    for (const release of releases) {
+      const asset = release.assets?.find((a) => pattern.test(a.name));
+      if (asset) return { release, asset };
+    }
+  }
+
+  console.error(`No recent ${REPO} release has an asset matching ${pattern}.`);
+  console.error("Set LLAMA_RELEASE_TAG=bNNNN (e.g. b9876) and retry.");
   process.exit(1);
 }
+
+const { release, asset } = await resolveReleaseWithAsset();
 
 console.log(`Release ${release.tag_name}`);
 console.log(`Asset    ${asset.name} (${(asset.size / 1024 ** 2).toFixed(1)} MB)`);
