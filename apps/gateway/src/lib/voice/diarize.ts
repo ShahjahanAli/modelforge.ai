@@ -567,23 +567,40 @@ export function collapseDuplicateAdjacentText(segments: TranscriptSegment[]): Tr
 
 /** Public API shape: include start/end aliases for Anusandhan and other clients. */
 export function toPublicTranscript(transcript: TranscriptArtifact) {
+  const speakerNames = transcript.speakerNames ?? {};
   return {
     ...transcript,
+    textEn: transcript.textEn ?? null,
+    dialectHint: transcript.dialectHint ?? null,
+    dialectLabel: transcript.dialectLabel ?? null,
+    speakerNames: Object.keys(speakerNames).length ? speakerNames : null,
+    namesMentioned: transcript.namesMentioned?.length ? transcript.namesMentioned : null,
     speakers: [
       ...new Set(
-        transcript.segments
-          .map((segment) => segment.speaker)
-          .filter((speaker): speaker is string => Boolean(speaker)),
+        transcript.segments.map((segment) => {
+          const id = segment.speaker;
+          if (!id) return null;
+          return speakerNames[id] || id;
+        }).filter((speaker): speaker is string => Boolean(speaker)),
       ),
     ],
-    segments: transcript.segments.map((segment) => ({
-      start: segment.startSec,
-      end: segment.endSec,
-      startSec: segment.startSec,
-      endSec: segment.endSec,
-      text: segment.text,
-      speaker: segment.speaker ?? null,
-      confidence: segment.confidence ?? null,
-    })),
+    segments: transcript.segments.map((segment) => {
+      const speakerId = segment.speakerId ?? segment.speaker ?? null;
+      const named =
+        (speakerId && speakerNames[speakerId]) ||
+        segment.speaker ||
+        null;
+      return {
+        start: segment.startSec,
+        end: segment.endSec,
+        startSec: segment.startSec,
+        endSec: segment.endSec,
+        text: segment.text,
+        textEn: segment.textEn ?? null,
+        speaker: named,
+        speakerId,
+        confidence: segment.confidence ?? null,
+      };
+    }),
   };
 }

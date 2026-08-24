@@ -22,7 +22,17 @@ app.use(
     origin: env.CORS_ORIGIN.split(",").map((s) => s.trim()),
   }),
 );
-app.use(express.json({ limit: "2mb" }));
+// Skip JSON parser on raw audio uploads (body handled by express.raw on those routes).
+const jsonParser = express.json({ limit: "2mb" });
+app.use((req, res, next) => {
+  if (
+    req.method === "POST" &&
+    (req.path === "/v1/voice/analyze" || req.path === "/v1/anusandhan/voice/transcribe")
+  ) {
+    return next();
+  }
+  return jsonParser(req, res, next);
+});
 
 app.use((req, res, next) => {
   req.requestId = req.header("x-request-id") ?? randomUUID();
@@ -56,6 +66,10 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 });
 
 const server = app.listen(env.GATEWAY_PORT, async () => {
+  // Voice uploads + Gemini/HF Space can exceed Node's default ~5m request timeout.
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
+  server.keepAliveTimeout = 120_000;
   console.log(`ModelForge gateway listening on :${env.GATEWAY_PORT}`);
   console.log(
     env.REDIS_ENABLED

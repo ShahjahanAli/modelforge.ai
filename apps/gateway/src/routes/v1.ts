@@ -145,13 +145,13 @@ v1Router.get("/usage/receipts/:requestId", authMiddleware, async (req, res) => {
 
 v1Router.post(
   "/voice/analyze",
-  authMiddleware,
-  rateLimitRpmMiddleware,
   (req, res, next) => {
     const maxUploadMb = Math.max(1, Number(process.env.VOICE_MAX_UPLOAD_MB ?? 50));
-    // Parser limit must match (or exceed) VOICE_MAX_UPLOAD_MB or Express rejects before the handler.
+    // Parse body before auth/rate-limit so large uploads are not cut mid-stream (Broken pipe).
     express.raw({ type: "*/*", limit: `${maxUploadMb}mb` })(req, res, next);
   },
+  authMiddleware,
+  rateLimitRpmMiddleware,
   async (req, res) => {
     try {
       if (process.env.VOICE_ENABLED === "false") {

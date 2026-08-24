@@ -56,9 +56,18 @@ function anusandhanMiddleware(
   }
 }
 
-anusandhanRouter.use(authMiddleware, anusandhanMiddleware);
+function voiceRawBody(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  const maxUploadMb = Math.max(1, Number(process.env.VOICE_MAX_UPLOAD_MB ?? 50));
+  // Must run BEFORE auth: if auth/rate-limit responds while the client is still
+  // uploading, urllib gets Errno 32 Broken pipe instead of a JSON error.
+  express.raw({ type: "*/*", limit: `${maxUploadMb}mb` })(req, res, next);
+}
 
-anusandhanRouter.get("/models", async (_req, res) => {
+anusandhanRouter.get("/models", authMiddleware, anusandhanMiddleware, async (_req, res) => {
   try {
     const hosted = await resolveAnusandhanPlatformDefault();
     res.json({
@@ -90,11 +99,10 @@ anusandhanRouter.get("/models", async (_req, res) => {
 
 anusandhanRouter.post(
   "/voice/transcribe",
+  voiceRawBody,
+  authMiddleware,
+  anusandhanMiddleware,
   rateLimitRpmMiddleware,
-  (req, res, next) => {
-    const maxUploadMb = Math.max(1, Number(process.env.VOICE_MAX_UPLOAD_MB ?? 50));
-    express.raw({ type: "*/*", limit: `${maxUploadMb}mb` })(req, res, next);
-  },
   async (req, res) => {
     try {
       if (process.env.VOICE_ENABLED === "false") {
@@ -260,6 +268,8 @@ anusandhanRouter.post(
 
 anusandhanRouter.post(
   "/chat/completions",
+  authMiddleware,
+  anusandhanMiddleware,
   rateLimitMiddleware,
   quotaMiddleware,
   async (req, res) => {

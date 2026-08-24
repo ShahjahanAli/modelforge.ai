@@ -2,13 +2,30 @@ export interface TranscriptSegment {
   startSec: number;
   endSec: number;
   text: string;
+  /** English translation of this turn (optional; Gemini voice). */
+  textEn?: string | null;
   confidence?: number;
   speaker?: string | null;
+  /** Stable diarization id when speaker was remapped to a spoken name. */
+  speakerId?: string | null;
 }
 
 export interface TranscriptArtifact {
   language: string;
   text: string;
+  /** Full-call English translation (optional; Gemini voice). */
+  textEn?: string | null;
+  /**
+   * Dialect / regiolect hint from Gemini (e.g. chittagong, sylhet, standard_bangla).
+   * Analyst hint only — not a certified classifier.
+   */
+  dialectHint?: string | null;
+  /** Human label e.g. "Chittagong" / "Sylhet". */
+  dialectLabel?: string | null;
+  /** Spoken names mapped to SPEAKER_00… when explicitly stated in-call. */
+  speakerNames?: Record<string, string> | null;
+  /** Proper names mentioned without a firm speaker mapping. */
+  namesMentioned?: string[] | null;
   confidence: number | null;
   segments: TranscriptSegment[];
   provider: string;

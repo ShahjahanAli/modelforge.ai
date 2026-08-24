@@ -224,17 +224,28 @@ function buildSystemPrompt(mode: GeminiVoiceMode, languageHint?: string): string
   const lang = languageHint?.trim() || "bn";
   const analysisRule =
     mode === "analyze"
-      ? `Also set "analysis" to a concise investigator-facing summary (speakers, topics, phone numbers/names mentioned, actionable items). Use the same language as the call when possible.`
+      ? `Also set "analysis" to a concise investigator-facing summary (speakers, topics, phone numbers/names mentioned, actionable items). Prefer English for analysis when the call is Bangla.`
       : `Set "analysis" to an empty string.`;
 
-  return `You are an investigative call ASR + diarization engine.
+  return `You are an investigative call ASR + diarization + dialect/translation engine for Bangladesh phone calls.
 Listen to the audio and return ONLY valid JSON (no markdown) with this shape:
 {
   "language": "${lang}",
+  "dialectHint": "sylhet|chittagong|noakhali|barisal|rangpur|standard_bangla|mixed|unknown",
+  "dialectLabel": "Sylhet",
   "segments": [
-    { "speaker": "SPEAKER_00", "startSec": 0.0, "endSec": 1.2, "text": "..." }
+    {
+      "speaker": "SPEAKER_00",
+      "startSec": 0.0,
+      "endSec": 1.2,
+      "text": "original language transcript for this turn",
+      "textEn": "English translation of this turn"
+    }
   ],
-  "text": "full transcript concatenating segments in order",
+  "text": "full transcript concatenating segment text in order",
+  "textEn": "full English translation of the call in order",
+  "speakerNames": { "SPEAKER_00": "Rahim" },
+  "namesMentioned": ["Rahim", "Kamal"],
   "analysis": "..."
 }
 
@@ -242,15 +253,60 @@ Rules:
 - Transcribe faithfully (Bangla / Bangla–English code-switch OK). Do not invent words.
 - Diarize speakers as SPEAKER_00, SPEAKER_01, … (two-party calls are common).
 - startSec/endSec are approximate seconds from the start of the file.
-- Keep street register; do not over-normalize dialect.
+- Keep street register in "text"; do not over-normalize dialect in the original transcript.
+- dialectHint: best-effort regiolect from pronunciation/lexicon (Chittagong/Chittagonian, Sylhet/Sylheti, Noakhali, Barisal, Rangpur, standard Dhaka/news Bangla, mixed, or unknown). This is an analyst HINT only — never claim certainty.
+- dialectLabel: short human label matching dialectHint (e.g. "Chittagong", "Sylhet", "Standard Bangla").
+- textEn / segment textEn: clear English translation. Keep names, places, and phone numbers accurate. Do not invent content that is not in the audio.
+- speakerNames: ONLY map SPEAKER_xx → a real name when that speaker clearly self-identifies or is unambiguously addressed by that name in the audio. Otherwise use {}.
+- namesMentioned: proper names spoken in the call (people/places/orgs), even if speaker mapping is unclear. Do not invent names.
+- Never invent person names for speakerNames.
 - ${analysisRule}
-- If audio is silent/unusable, return empty segments and text "".`;
+- If audio is silent/unusable, return empty segments/text/textEn and dialectHint "unknown".`;
+}
+
+const DIALECT_LABELS: Record<string, string> = {
+  sylhet: "Sylhet",
+  sylheti: "Sylhet",
+  chittagong: "Chittagong",
+  chittagonian: "Chittagong",
+  ctg: "Chittagong",
+  noakhali: "Noakhali",
+  barisal: "Barisal",
+  rangpur: "Rangpur",
+  standard_bangla: "Standard Bangla",
+  standard: "Standard Bangla",
+  dhaka: "Standard Bangla",
+  mixed: "Mixed",
+  unknown: "Unknown",
+};
+
+function normalizeDialectHint(raw: string | undefined | null): {
+  dialectHint: string | null;
+  dialectLabel: string | null;
+} {
+  const key = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  if (!key || key === "unknown") {
+    return { dialectHint: key === "unknown" ? "unknown" : null, dialectLabel: key === "unknown" ? "Unknown" : null };
+  }
+  const label = DIALECT_LABELS[key];
+  if (label) return { dialectHint: key === "sylheti" ? "sylhet" : key === "chittagonian" || key === "ctg" ? "chittagong" : key === "standard" || key === "dhaka" ? "standard_bangla" : key, dialectLabel: label };
+  // Free-form label from model
+  const pretty = String(raw ?? "").trim();
+  return { dialectHint: key, dialectLabel: pretty || null };
 }
 
 export function parseGeminiVoiceJson(raw: string): {
   language: string;
   text: string;
+  textEn: string;
+  dialectHint: string | null;
+  dialectLabel: string | null;
   segments: TranscriptSegment[];
+  speakerNames: Record<string, string>;
+  namesMentioned: string[];
   analysis: string;
 } {
   let cleaned = (raw || "").trim();
@@ -264,7 +320,17 @@ export function parseGeminiVoiceJson(raw: string): {
   const parsed = JSON.parse(cleaned.slice(start, end + 1)) as {
     language?: string;
     text?: string;
+    textEn?: string;
+    text_en?: string;
+    dialectHint?: string;
+    dialect_hint?: string;
+    dialectLabel?: string;
+    dialect_label?: string;
     analysis?: string;
+    speakerNames?: Record<string, string>;
+    speaker_names?: Record<string, string>;
+    namesMentioned?: string[];
+    names_mentioned?: string[];
     segments?: Array<{
       speaker?: string;
       startSec?: number;
@@ -272,6 +338,8 @@ export function parseGeminiVoiceJson(raw: string): {
       endSec?: number;
       end?: number;
       text?: string;
+      textEn?: string;
+      text_en?: string;
     }>;
   };
 
@@ -280,8 +348,18 @@ export function parseGeminiVoiceJson(raw: string): {
       const startSec = Number(s.startSec ?? s.start ?? 0);
       const endSec = Number(s.endSec ?? s.end ?? startSec);
       const text = String(s.text ?? "").replace(/\s+/g, " ").trim();
+      const textEn = String(s.textEn ?? s.text_en ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
       const speaker = String(s.speaker ?? "SPEAKER_00").trim() || "SPEAKER_00";
-      return { startSec, endSec: Math.max(endSec, startSec), text, speaker };
+      return {
+        startSec,
+        endSec: Math.max(endSec, startSec),
+        text,
+        textEn: textEn || null,
+        speaker,
+        speakerId: speaker,
+      };
     })
     .filter((s) => s.text.length > 0);
 
@@ -290,10 +368,49 @@ export function parseGeminiVoiceJson(raw: string): {
       .replace(/\s+/g, " ")
       .trim() || segments.map((s) => s.text).join(" ").trim();
 
+  const textEn =
+    String(parsed.textEn ?? parsed.text_en ?? "")
+      .replace(/\s+/g, " ")
+      .trim() ||
+    segments
+      .map((s) => s.textEn)
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+
+  const { dialectHint, dialectLabel: dialectFromHint } = normalizeDialectHint(
+    parsed.dialectHint ?? parsed.dialect_hint,
+  );
+  const dialectLabel =
+    String(parsed.dialectLabel ?? parsed.dialect_label ?? "").trim() || dialectFromHint;
+
+  const rawNames = parsed.speakerNames ?? parsed.speaker_names ?? {};
+  const speakerNames: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rawNames)) {
+    const id = String(k).trim();
+    const name = String(v ?? "").trim();
+    if (id && name && !/^SPEAKER[_-]?\d+$/i.test(name)) {
+      speakerNames[id] = name;
+    }
+  }
+
+  const namesMentioned = [
+    ...new Set(
+      (parsed.namesMentioned ?? parsed.names_mentioned ?? [])
+        .map((n) => String(n ?? "").trim())
+        .filter(Boolean),
+    ),
+  ];
+
   return {
     language: String(parsed.language ?? "bn").trim() || "bn",
     text,
+    textEn,
+    dialectHint,
+    dialectLabel,
     segments,
+    speakerNames,
+    namesMentioned,
     analysis: String(parsed.analysis ?? "").trim(),
   };
 }
@@ -326,7 +443,7 @@ export async function runGeminiVoicePipeline(input: {
     }
 
     const userBits = [
-      "Transcribe and diarize this call audio.",
+      "Transcribe, diarize, detect Bangla dialect (Chittagong/Sylhet/etc. as a hint), translate each turn to English, and only map speaker names when clearly spoken.",
       input.languageHint ? `Language hint: ${input.languageHint}` : "",
       input.mode === "analyze" && input.analysisHint
         ? `Analysis focus: ${input.analysisHint}`
@@ -386,15 +503,24 @@ export async function runGeminiVoicePipeline(input: {
     }
 
     const parsed = parseGeminiVoiceJson(raw);
+    const language =
+      parsed.dialectLabel && parsed.language
+        ? `${parsed.language} · ${parsed.dialectLabel}`
+        : parsed.language;
     const transcript = normalizeTranscript({
-      language: parsed.language,
+      language,
       text: parsed.text,
+      textEn: parsed.textEn || null,
+      dialectHint: parsed.dialectHint,
+      dialectLabel: parsed.dialectLabel,
+      speakerNames: Object.keys(parsed.speakerNames).length ? parsed.speakerNames : null,
+      namesMentioned: parsed.namesMentioned.length ? parsed.namesMentioned : null,
       confidence: null,
       segments:
         parsed.segments.length > 0
           ? parsed.segments
           : parsed.text
-            ? [{ startSec: 0, endSec: 0, text: parsed.text, speaker: "SPEAKER_00" }]
+            ? [{ startSec: 0, endSec: 0, text: parsed.text, textEn: parsed.textEn || null, speaker: "SPEAKER_00", speakerId: "SPEAKER_00" }]
             : [],
       provider: "gemini",
       model: auth.upstreamModel,

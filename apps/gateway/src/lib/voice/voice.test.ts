@@ -32,6 +32,35 @@ describe("gemini voice JSON parse", () => {
     expect(parsed.analysis).toBe("two party call");
   });
 
+  it("parses dialect, English translation, and speaker names", () => {
+    const raw = JSON.stringify({
+      language: "bn",
+      dialectHint: "sylhet",
+      dialectLabel: "Sylhet",
+      text: "কি খবর",
+      textEn: "What's up",
+      speakerNames: { SPEAKER_00: "Rahim" },
+      namesMentioned: ["Rahim", "Kamal"],
+      segments: [
+        {
+          speaker: "SPEAKER_00",
+          startSec: 0,
+          endSec: 1,
+          text: "কি খবর",
+          textEn: "What's up",
+        },
+      ],
+      analysis: "",
+    });
+    const parsed = parseGeminiVoiceJson(raw);
+    expect(parsed.dialectHint).toBe("sylhet");
+    expect(parsed.dialectLabel).toBe("Sylhet");
+    expect(parsed.textEn).toBe("What's up");
+    expect(parsed.segments[0]?.textEn).toBe("What's up");
+    expect(parsed.speakerNames.SPEAKER_00).toBe("Rahim");
+    expect(parsed.namesMentioned).toEqual(["Rahim", "Kamal"]);
+  });
+
   it("strips markdown fences", () => {
     const raw = "```json\n{\"language\":\"bn\",\"text\":\"ok\",\"segments\":[],\"analysis\":\"\"}\n```";
     expect(parseGeminiVoiceJson(raw).text).toBe("ok");
